@@ -1,0 +1,23 @@
+{
+  "cli": {
+    "version": ">= 16.0.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "android-staff": {
+      "distribution": "internal",
+      "channel": "production",
+      "android": { "buildType": "apk" },
+      "env": { "EXPO_PUBLIC_SERVER_URL": "https://app.gwgewalt.com" }
+    },
+    "ios-testflight": {
+      "distribution": "store",
+      "channel": "production",
+      "autoIncrement": true,
+      "env": { "EXPO_PUBLIC_SERVER_URL": "https://app.gwgewalt.com" }
+    }
+  },
+  "submit": {
+    "ios-testflight": {}
+  }
+}

@@ -1,0 +1,31 @@
+@import "tailwindcss";
+
+/* Same colours as the phone app (mobile/src/components/ui.tsx). */
+@theme {
+  --color-bg: #f4f5f7;
+  --color-card: #ffffff;
+  --color-ink: #111827;
+  --color-muted: #6b7280;
+  --color-line: #e5e7eb;
+  --color-primary: #0b5fff;
+  --color-danger: #dc2626;
+  --color-success: #16a34a;
+  --color-kiv: #9333ea;
+  --color-warn: #b45309;
+  --color-wait: #0e7490;
+  --color-navy: #182250;
+  --font-sans: Roboto, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+}
+
+html,
+body {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Inputs look like the app's text fields */
+.field {
+  @apply w-full rounded-[10px] border border-line bg-white px-3 py-2.5 text-base text-ink outline-none placeholder:text-[#9ca3af] focus:border-primary min-h-[46px];
+}

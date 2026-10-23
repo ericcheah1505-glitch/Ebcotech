@@ -1,0 +1,8 @@
+**/node_modules
+mobile
+server/data
+server/test
+web/.next
+web/out
+deploy
+.git

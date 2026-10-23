@@ -1,0 +1,15 @@
+node_modules/
+server/data/
+.expo/
+dist/
+deploy/keys/
+deploy/backups/
+*.pem
+web/.next/
+web/out/
+.env
+*.log
+phone-app-qr.png
+server/data/
+*.db
+*.db-*

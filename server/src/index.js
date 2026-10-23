@@ -26,7 +26,7 @@ if (fs.existsSync(WEB_DIR)) {
 // The PDF report needs Chrome; say so clearly at start-up if it is missing.
 try {
   const { default: puppeteer } = await import('puppeteer');
-  if (!fs.existsSync(puppeteer.executablePath())) console.warn('WARNING: Chrome for PDF reports is not installed – PDFs will fail.');
+  if (!fs.existsSync(await puppeteer.executablePath())) console.warn('WARNING: Chrome for PDF reports is not installed – PDFs will fail.');
 } catch (e) {
   console.warn('WARNING: could not check Chrome for PDF reports:', e.message);
 }

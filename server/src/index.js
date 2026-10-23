@@ -23,6 +23,14 @@ if (fs.existsSync(WEB_DIR)) {
   console.warn(`Website not built yet (${WEB_DIR} missing) – only the API is available.`);
 }
 
+// The PDF report needs Chrome; say so clearly at start-up if it is missing.
+try {
+  const { default: puppeteer } = await import('puppeteer');
+  if (!fs.existsSync(puppeteer.executablePath())) console.warn('WARNING: Chrome for PDF reports is not installed – PDFs will fail.');
+} catch (e) {
+  console.warn('WARNING: could not check Chrome for PDF reports:', e.message);
+}
+
 // Service-contract automation: create due servicing jobs when the server starts, and again whenever
 // someone opens the Today page (see app.js) – no timer, so the host can sleep when nobody uses it.
 try {

@@ -29,6 +29,9 @@ ENV NODE_ENV=production \
 WORKDIR /app/server
 COPY server/package.json server/package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
+# Download Chrome for the PDF reports explicitly: puppeteer's automatic download only prints a warning
+# when it fails, which would leave a build that "succeeds" but can't make PDFs. This step fails the build.
+RUN npx puppeteer browsers install chrome
 COPY server/src ./src
 COPY server/assets ./assets
 COPY server/scripts ./scripts

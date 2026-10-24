@@ -6,10 +6,10 @@ import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const LOGO_DATA_URI = `data:image/png;base64,${fs.readFileSync(path.join(HERE, '..', 'assets', 'company-logo.png')).toString('base64')}`;
+export const LOGO_DATA_URI = `data:image/png;base64,${fs.readFileSync(path.join(HERE, '..', 'assets', 'company-logo.png')).toString('base64')}`;
 
-const COMPANY_NAME = 'EBCOTECH MACHINERY';
-const COMPANY = {
+export const COMPANY_NAME = 'EBCOTECH MACHINERY';
+export const COMPANY = {
   chinese: '德科德機械有限公司',
   regNo: '(833774-U)',
   address: 'No 1, Jalan Gangsa SD5/3A, Bandar Sri Damansara, 52200 K.L., Malaysia.',
@@ -28,13 +28,13 @@ const MOTORS = ['100W CIRCLE', '75W SQUARE'];
 const CONTROLLERS = ['PREMIUM (orange+green)', 'EASY (white / blue)'];
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-const niceDate = (str) => {
+export const niceDate = (str) => {
   if (!str) return '-';
   const [y, m, d] = str.slice(0, 10).split('-').map(Number);
   return `${d} ${MONTHS[m - 1]} ${y}`;
 };
 
-const esc = (s) =>
+export const esc = (s) =>
   String(s ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -244,12 +244,13 @@ export function previewHtml(job, photos) {
 }
 
 // A4 PDF of the report, rendered by a headless browser (same engine as Chrome).
-export async function reportPdf(html) {
+// `options` adds to the PDF settings (e.g. page numbers in the footer).
+export async function reportPdf(html, options = {}) {
   const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
   try {
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: 'load' });
-    return Buffer.from(await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true }));
+    return Buffer.from(await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true, ...options }));
   } finally {
     await browser.close();
   }

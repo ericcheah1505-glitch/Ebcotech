@@ -90,7 +90,7 @@ export function jobIncentive(db, jobId) {
 export function incentiveReport(db, from, to, technicianId = null) {
   const jobs = db
     .prepare(
-      `SELECT j.id, j.job_no, j.customer_name, j.completed_at, jt.name AS job_type
+      `SELECT j.id, j.job_no, j.customer_name, j.completed_at, j.inv_do_no, jt.name AS job_type
        FROM jobs j JOIN job_types jt ON jt.id = j.job_type_id
        WHERE j.status = 'completed' AND substr(j.completed_at, 1, 10) BETWEEN ? AND ?
        ORDER BY j.completed_at`
@@ -126,7 +126,11 @@ export function incentiveReport(db, from, to, technicianId = null) {
         job_id: job.id,
         job_no: job.job_no,
         customer_name: job.customer_name,
+        inv_do_no: job.inv_do_no,
         job_type: job.job_type,
+        grade: line.grade,
+        under_warranty: line.under_warranty,
+        capped: line.capped,
         completed_at: job.completed_at,
         base: line.base,
         extras: line.extras,

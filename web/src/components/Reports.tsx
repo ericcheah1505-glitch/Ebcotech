@@ -4,7 +4,7 @@
 // per-job breakdown and Excel download.
 import Link from 'next/link';
 import { Fragment, useCallback, useEffect, useState } from 'react';
-import { api, downloadFile } from '@/lib/api';
+import { api, apiBlob, downloadFile } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { monthRange, niceDate, rm } from '@/lib/format';
 import type { IncentiveReport, InstalledReport, JobType } from '@/lib/types';
@@ -44,6 +44,19 @@ export function usePeriod() {
   return { range, picker };
 }
 
+// Opens the printable incentive statement (admin only) in a new tab, ready to print for the staff meeting.
+async function openStatement(range: { from: string; to: string }) {
+  const tab = window.open('', '_blank');
+  try {
+    const url = URL.createObjectURL(await apiBlob(`/incentives/statement.pdf?from=${range.from}&to=${range.to}`, 120000));
+    if (tab) tab.location.href = url;
+    else window.location.href = url;
+  } catch (e: any) {
+    tab?.close();
+    alert(e.message);
+  }
+}
+
 export function IncentiveReportView({ range }: { range: { from: string; to: string } }) {
   const { user } = useAuth();
   const [report, setReport] = useState<IncentiveReport | null>(null);
@@ -68,6 +81,7 @@ export function IncentiveReportView({ range }: { range: { from: string; to: stri
             <Muted>Total incentive payable</Muted>
             <span className="text-[26px] font-extrabold">{rm(report.grand_total)}</span>
           </Card>
+          <Button variant="secondary" title="🖨 Print statement for meeting" onPress={() => openStatement(range)} />
           <Button
             variant="secondary"
             title="⬇ Download Excel (summary + per job)"

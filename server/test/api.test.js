@@ -748,3 +748,40 @@ test('opening Today creates due contract jobs (no timer needed), once, at most h
     server.close();
   }
 });
+
+test('incentive statement for the staff meeting: admin only, no customer names, warranty jobs at RM0', async () => {
+  const { server, call, login, raw } = await setup();
+  try {
+    const admin = await login('admin', 'admin123');
+    const sales = await login('sales1', 'sales123');
+    const tech1 = await login('tech1', 'tech123');
+    const users = await call(admin, 'GET', '/users');
+    const t1 = users.find((u) => u.username === 'tech1').id;
+    const types = await call(admin, 'GET', '/job-types');
+    const install = types.find((t) => t.name === 'Installation');
+    const servicing = types.find((t) => t.name.startsWith('Servicing'));
+
+    const paid = await call(admin, 'POST', '/jobs', { job_type_id: install.id, customer_name: 'Secret Customer Sdn Bhd', address: 'Hidden Road 1', inv_do_no: 'INV-777', technician_ids: [t1] });
+    await finishJob(call, admin, paid.id);
+    const claim = await call(admin, 'POST', '/jobs', { job_type_id: servicing.id, customer_name: 'Secret Customer Sdn Bhd', technician_ids: [t1], under_warranty: true });
+    await finishJob(call, admin, claim.id);
+
+    const html = await (await raw(admin, '/incentives/statement.pdf?format=html')).text();
+    assert.match(html, /TECHNICIAN INCENTIVE STATEMENT/);
+    assert.match(html, /INV-777/);
+    assert.match(html, new RegExp((await call(admin, 'GET', `/jobs/${paid.id}`)).job_no));
+    assert.match(html, /Under warranty – no incentive/);
+    assert.match(html, /GRAND TOTAL<\/td><td class="r">RM 60\.00/);
+    assert.doesNotMatch(html, /Secret Customer|Hidden Road/);
+
+    const pdf = await raw(admin, '/incentives/statement.pdf');
+    assert.equal(pdf.status, 200);
+    assert.equal(pdf.headers.get('content-type'), 'application/pdf');
+    assert.equal(Buffer.from(await pdf.arrayBuffer()).subarray(0, 5).toString(), '%PDF-');
+
+    assert.equal((await raw(sales, '/incentives/statement.pdf')).status, 403);
+    assert.equal((await raw(tech1, '/incentives/statement.pdf')).status, 403);
+  } finally {
+    server.close();
+  }
+});

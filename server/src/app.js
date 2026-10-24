@@ -18,6 +18,7 @@ import { installedSummary } from './reports.js';
 import { getSettings, idleLabel, saveSettings } from './settings.js';
 import { previewHtml, reportHtml, reportPdf } from './report.js';
 import { incentiveWorkbook, installedWorkbook, jobsWorkbook } from './exports.js';
+import { STATEMENT_PDF_OPTIONS, statementHtml } from './statement.js';
 import { isValidDate, nowStamp, today } from './dates.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -794,6 +795,23 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
       const techId = req.user.role === 'technician' ? req.user.id : req.query.technician_id ? Number(req.query.technician_id) : null;
       if (req.user.role === 'salesman') fail(403, 'Not allowed for your role');
       return incentiveReport(db, from, to, techId);
+    })
+  );
+
+  // Printable incentive statement for the staff meeting – admin only.
+  app.get(
+    '/api/incentives/statement.pdf',
+    requireRole('admin'),
+    wrapAsync(async (req, res) => {
+      const from = req.query.from || `${today().slice(0, 7)}-01`;
+      const to = req.query.to || today();
+      if (!isValidDate(from) || !isValidDate(to)) fail(400, 'Dates must be YYYY-MM-DD');
+      const html = statementHtml(incentiveReport(db, from, to), nowStamp());
+      if (req.query.format === 'html') return res.type('html').send(html);
+      const pdf = await reportPdf(html, STATEMENT_PDF_OPTIONS);
+      res.set('Content-Type', 'application/pdf');
+      res.set('Content-Disposition', `inline; filename="Incentive-Statement-${from}-to-${to}.pdf"`);
+      res.send(pdf);
     })
   );
 

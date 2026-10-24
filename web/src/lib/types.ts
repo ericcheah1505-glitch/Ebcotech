@@ -87,6 +87,10 @@ export type Photo = {
 export type JobDetail = JobSummary & {
   job_type_id: number;
   type_warranty_months: number; // the job type's default warranty
+  // Only the job's own salesman (normally whoever posted it) signs the report and marks it done.
+  sign_off_id: number | null;
+  sign_off_name: string | null;
+  can_sign_off: boolean;
   customer_phone: string | null;
   description: string | null;
   salesman_id: number | null;

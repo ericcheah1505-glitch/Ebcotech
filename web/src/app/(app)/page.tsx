@@ -78,7 +78,10 @@ export default function Today() {
               <Section title={`Tomorrow (${data.tomorrow.length})`} jobs={data.tomorrow} empty="No jobs tomorrow" showDate={false} />
               <Section title={`KIV – waiting confirmation (${data.kiv.length})`} jobs={data.kiv} empty="No KIV jobs" />
               {data.awaiting_done && data.awaiting_done.length > 0 && (
-                <Section title={`✍ Waiting for you to mark done (${data.awaiting_done.length})`} jobs={data.awaiting_done} />
+                <Section
+                  title={`✍ ${isAdmin ? 'Waiting for the salesman to sign & mark done' : 'Waiting for you to mark done'} (${data.awaiting_done.length})`}
+                  jobs={data.awaiting_done}
+                />
               )}
               {data.unassigned && <Section title={`Unassigned (${data.unassigned.length})`} jobs={data.unassigned} empty="All jobs assigned" />}
               {data.awaiting_signature && data.awaiting_signature.length > 0 && (

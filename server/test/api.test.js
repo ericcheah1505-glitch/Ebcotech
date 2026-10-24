@@ -343,9 +343,9 @@ test('signatures are saved immediately, before the report is submitted', async (
     // Submitting the report later without re-signing keeps them
     await call(tech1, 'POST', `/jobs/${job.id}/submit-report`, { work_done: 'Done' });
 
-    // Salesman must sign before the job can be marked as done (admin too)
+    // Salesman must sign before the job can be marked as done (admin can't: not their job)
     await assert.rejects(call(sales, 'POST', `/jobs/${job.id}/status`, { status: 'completed' }), /must sign/);
-    await assert.rejects(call(admin, 'POST', `/jobs/${job.id}/status`, { status: 'completed' }), /must sign/);
+    await assert.rejects(call(admin, 'POST', `/jobs/${job.id}/status`, { status: 'completed' }), /belongs to Sample Salesman/);
     await call(sales, 'POST', `/jobs/${job.id}/salesman-signature`, { signature: SIG });
     const done = await call(sales, 'POST', `/jobs/${job.id}/status`, { status: 'completed' });
     assert.equal(done.technician_signature, 'data:image/png;base64,TT');
@@ -414,7 +414,7 @@ test('admin setting controls whether salesmen see the installed models report', 
     const byAdmin = await call(admin, 'POST', '/jobs', { job_type_id: install.id, customer_name: 'A', product_model: 'HH400' });
     const bySales = await call(sales, 'POST', '/jobs', { job_type_id: install.id, customer_name: 'B', product_model: 'HH350' });
     await finishJob(call, admin, byAdmin.id);
-    await finishJob(call, admin, bySales.id);
+    await finishJob(call, sales, bySales.id);
 
     // Default: off
     assert.equal((await call(sales, 'GET', '/settings')).salesman_installed_report, 'off');
@@ -537,7 +537,7 @@ test('photos: technicians add, everyone on the job views, removal rules, limits'
 
     // Once done: technicians can't add or remove; admin can
     await call(tech1, 'POST', `/jobs/${job.id}/photos`, { image: img, stage: 'after', caption: 'Door working' });
-    await finishJob(call, admin, job.id);
+    await finishJob(call, sales, job.id);
     await assert.rejects(call(tech1, 'POST', `/jobs/${job.id}/photos`, { image: img, stage: 'after', caption: 'Late' }), /already done/);
     await assert.rejects(call(tech1, 'DELETE', `/jobs/${job.id}/photos/${pid}`), /already done/);
     const after = await call(admin, 'DELETE', `/jobs/${job.id}/photos/${pid}`);
@@ -625,7 +625,7 @@ test("a leaver's unfinished jobs move to another person in one step", async () =
     await call(tech1, 'POST', `/jobs/${open1.id}/extras`, { extra_item_id: welding.id, technician_id: t1 });
     await call(tech1, 'POST', `/jobs/${kiv.id}/status`, { status: 'kiv', kiv_reason: 'Waiting' });
     await call(tech1, 'POST', `/jobs/${submitted.id}/submit-report`, { work_done: 'Done by tech1' });
-    await finishJob(call, admin, done.id);
+    await finishJob(call, sales, done.id);
 
     const list = await call(admin, 'GET', `/users/${t1}/open-jobs`);
     assert.deepEqual(list.jobs.map((j) => j.id).sort(), [open1.id, shared.id, kiv.id].sort());
@@ -649,6 +649,7 @@ test("a leaver's unfinished jobs move to another person in one step", async () =
     assert.equal(moved.moved, 4); // open1, shared, kiv, submitted (done is excluded)
     assert.equal((await call(admin, 'GET', `/jobs/${submitted.id}`)).salesman_id, a);
     assert.equal((await call(admin, 'GET', `/jobs/${done.id}`)).salesman_id, s1);
+    await finishJob(call, admin, submitted.id); // the jobs are now admin's to sign and mark done
   } finally {
     server.close();
   }
@@ -947,6 +948,68 @@ test('warranty follow-up: own customers, automatic contacted/booked/expired, sta
     // Declined customers move to the Declined list
     await call(admin, 'POST', `/warranty-followups/${other.id}`, { status: 'declined', note: 'Using another company' });
     assert.deepEqual(names(await list(admin, '?show=declined')), ['Admin Customer']);
+  } finally {
+    server.close();
+  }
+});
+
+test('only the job owner signs the report and marks it done – not other salesmen, not admin', async () => {
+  const { db, server, call, login } = await setup();
+  try {
+    const admin = await login('admin', 'admin123');
+    const sales = await login('sales1', 'sales123');
+    const tech1 = await login('tech1', 'tech123');
+    await call(admin, 'POST', '/users', { name: 'Second Salesman', username: 'sales2', password: 'temp123', role: 'salesman' });
+    const first = await call(null, 'POST', '/login', { username: 'sales2', password: 'temp123' });
+    await call(first.token, 'POST', '/me/password', { current_password: 'temp123', new_password: 'sales2pw' });
+    const sales2 = first.token;
+    const users = await call(admin, 'GET', '/users');
+    const id = (n) => users.find((u) => u.username === n).id;
+
+    // Posted by sales1: only sales1 signs and marks it done
+    const job = await call(sales, 'POST', '/jobs', { job_type_id: 1, customer_name: 'Owner Co', owner_name: 'Building Owner', technician_ids: [id('tech1')] });
+    await call(tech1, 'POST', `/jobs/${job.id}/submit-report`, { work_done: 'Done' });
+    assert.equal((await call(sales, 'GET', '/reminders')).awaiting_done.length, 1);
+    assert.equal((await call(sales2, 'GET', '/reminders')).awaiting_done.length, 0);
+    for (const other of [sales2, admin]) {
+      await assert.rejects(call(other, 'POST', `/jobs/${job.id}/salesman-signature`, { signature: SIG }), /belongs to Sample Salesman/);
+      const seen = await call(other, 'GET', `/jobs/${job.id}`);
+      assert.equal(seen.can_sign_off, false);
+      assert.equal(seen.sign_off_name, 'Sample Salesman');
+      assert.equal(seen.owner_name, 'Building Owner'); // the report's owner field is untouched
+    }
+    assert.equal((await call(sales, 'GET', `/jobs/${job.id}`)).can_sign_off, true);
+    await call(sales, 'POST', `/jobs/${job.id}/salesman-signature`, { signature: SIG });
+    for (const other of [sales2, admin]) {
+      await assert.rejects(call(other, 'POST', `/jobs/${job.id}/status`, { status: 'completed' }), /only they can mark it as done/);
+    }
+    assert.equal((await call(sales, 'POST', `/jobs/${job.id}/status`, { status: 'completed' })).status, 'completed');
+
+    // Another salesman can't take a job over by editing or posting it; admin can hand it over
+    const job2 = await call(sales, 'POST', '/jobs', { job_type_id: 1, customer_name: 'Handover Co', technician_ids: [id('tech1')] });
+    await call(sales2, 'PUT', `/jobs/${job2.id}`, { salesman_id: id('sales2') });
+    assert.equal((await call(admin, 'GET', `/jobs/${job2.id}`)).salesman_id, id('sales1'));
+    const own = await call(sales2, 'POST', '/jobs', { job_type_id: 1, customer_name: 'Mine Co', salesman_id: id('sales1') });
+    assert.equal(own.salesman_id, id('sales2'));
+    await call(admin, 'PUT', `/jobs/${job2.id}`, { salesman_id: id('sales2') });
+    await finishJob(call, sales2, job2.id); // the new owner signs and marks it done
+
+    // Posted by admin without a salesman: admin's own job, and admin's name goes under the signature
+    const adminJob = await call(admin, 'POST', '/jobs', { job_type_id: 1, customer_name: 'Office Co', technician_ids: [id('tech1')] });
+    await call(tech1, 'POST', `/jobs/${adminJob.id}/submit-report`, { work_done: 'Done' });
+    await assert.rejects(call(sales, 'POST', `/jobs/${adminJob.id}/salesman-signature`, { signature: SIG }), /belongs to Administrator/);
+    assert.equal((await call(admin, 'POST', `/jobs/${adminJob.id}/salesman-signature`, { signature: SIG })).salesman_name, 'Administrator');
+
+    // A job made by a service contract (nobody posted it) belongs to whoever signs it first
+    const cid = Number(
+      db
+        .prepare(`INSERT INTO jobs (job_type_id, customer_name, status, submitted_at) VALUES (1, 'Contract Co', 'in_progress', datetime('now','localtime'))`)
+        .run().lastInsertRowid
+    );
+    assert.equal((await call(sales2, 'GET', `/jobs/${cid}`)).can_sign_off, true);
+    await call(sales2, 'POST', `/jobs/${cid}/salesman-signature`, { signature: SIG });
+    await assert.rejects(call(sales, 'POST', `/jobs/${cid}/status`, { status: 'completed' }), /belongs to Second Salesman/);
+    assert.equal((await call(sales2, 'POST', `/jobs/${cid}/status`, { status: 'completed' })).status, 'completed');
   } finally {
     server.close();
   }

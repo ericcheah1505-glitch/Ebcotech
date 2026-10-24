@@ -9,8 +9,8 @@ import { Button, Overlay, Spinner } from './ui';
 const PAGE_WIDTH = 820;
 
 // The service report exactly as the customer will get it (with Before/After photos), so the
-// salesman can check everything before signing.
-export function ReportPreview({ job, visible, onClose, onSign }: { job: JobDetail; visible: boolean; onClose: () => void; onSign: () => void }) {
+// salesman can check everything before signing. Without onSign it is view-only (other staff).
+export function ReportPreview({ job, visible, onClose, onSign }: { job: JobDetail; visible: boolean; onClose: () => void; onSign?: () => void }) {
   const [html, setHtml] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [scale, setScale] = useState(1);
@@ -44,8 +44,8 @@ export function ReportPreview({ job, visible, onClose, onSign }: { job: JobDetai
   return (
     <Overlay>
       <div className="border-b border-line bg-white p-3">
-        <div className="text-[17px] font-bold">Review report {job.job_no}</div>
-        <div className="text-muted">Scroll through the report and photos, then sign. Pinch to zoom.</div>
+        <div className="text-[17px] font-bold">{onSign ? 'Review report' : 'Report'} {job.job_no}</div>
+        <div className="text-muted">Scroll through the report and photos{onSign ? ', then sign' : ''}. Pinch to zoom.</div>
       </div>
       <div ref={boxRef} className="flex-1 overflow-auto bg-[#d1d5db] py-2">
         {html ? (
@@ -67,7 +67,7 @@ export function ReportPreview({ job, visible, onClose, onSign }: { job: JobDetai
       </div>
       <div className="mx-auto flex w-full max-w-[860px] gap-2 p-3">
         <Button variant="secondary" title="Close" onPress={onClose} className="flex-1" />
-        <Button title={job.salesman_signature ? '✍ Sign again' : '✍ Sign now'} onPress={onSign} disabled={!html} className="flex-[2]" />
+        {onSign && <Button title={job.salesman_signature ? '✍ Sign again' : '✍ Sign now'} onPress={onSign} disabled={!html} className="flex-[2]" />}
       </div>
     </Overlay>
   );

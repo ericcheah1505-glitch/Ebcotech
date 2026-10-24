@@ -195,6 +195,8 @@ export function reminders(db, user) {
       ? ` AND (j.salesman_id = ${Number(user.id)} OR j.created_by = ${Number(user.id)})`
       : '';
   const open = `j.status IN ('pending','assigned','in_progress')`;
+  // Jobs this salesman signs and marks as done (see jobOwner in app.js).
+  const owned = isSales ? ` AND COALESCE(j.salesman_id, j.created_by) = ${Number(user.id)}` : '';
 
   const out = {
     today: db.prepare(`${JOB_LIST_SQL} WHERE j.scheduled_date = ? AND ${open}${mine} ORDER BY j.scheduled_time`).all(t),
@@ -222,10 +224,10 @@ export function reminders(db, user) {
       .prepare(`${JOB_LIST_SQL} WHERE j.status = 'completed' AND j.warranty_end BETWEEN ? AND ?${mine} ORDER BY j.warranty_end`)
       .all(t, addDays(t, 30));
     out.awaiting_done = db
-      .prepare(`${JOB_LIST_SQL} WHERE j.status = 'in_progress' AND j.submitted_at IS NOT NULL${mine} ORDER BY j.submitted_at`)
+      .prepare(`${JOB_LIST_SQL} WHERE j.status = 'in_progress' AND j.submitted_at IS NOT NULL${owned} ORDER BY j.submitted_at`)
       .all();
     out.awaiting_signature = db
-      .prepare(`${JOB_LIST_SQL} WHERE j.status = 'completed' AND j.salesman_signature IS NULL${mine} ORDER BY j.completed_at DESC`)
+      .prepare(`${JOB_LIST_SQL} WHERE j.status = 'completed' AND j.salesman_signature IS NULL${owned} ORDER BY j.completed_at DESC`)
       .all();
   }
   return out;

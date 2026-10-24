@@ -413,7 +413,7 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
       const followup = b.warranty_followup_job_id ? followupJob(req, b.warranty_followup_job_id) : null;
       const techIds = (b.technician_ids || []).map(Number);
       const status = techIds.length ? 'assigned' : 'pending';
-      const salesmanId = b.salesman_id || (req.user.role === 'salesman' ? req.user.id : null);
+      const salesmanId = req.user.role === 'salesman' ? req.user.id : b.salesman_id || null;
       const { lastInsertRowid } = db
         .prepare(
           `INSERT INTO jobs (job_type_id, customer_name, customer_phone, address, description, scheduled_date,
@@ -467,7 +467,7 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
         b.description || null,
         b.scheduled_date || null,
         b.scheduled_time || null,
-        b.salesman_id || null,
+        req.user.role === 'admin' ? b.salesman_id || null : job.salesman_id,
         warrantyMonths(b.warranty_months),
         b.under_warranty ? 1 : 0,
         req.user.role === 'admin' ? optNum(b.incentive_cap) : job.incentive_cap,
@@ -507,6 +507,7 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
 
       const stamp = nowStamp();
       if (to === 'completed') {
+        requireOwner(db, job, req.user, 'mark it as done');
         if (!job.salesman_signature) fail(400, 'The salesman must sign the report before the job can be marked as done');
         if ('warranty_months' in b) db.prepare('UPDATE jobs SET warranty_months = ? WHERE id = ?').run(warrantyMonths(b.warranty_months), job.id);
         completeJob(db, job.id, req.user.id, b);
@@ -719,12 +720,14 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
     requireRole(...STAFF),
     wrap((req) => {
       const job = loadJob(db, req);
+      requireOwner(db, job, req.user, 'sign the report');
       if (job.status !== 'completed' && !job.submitted_at) fail(400, 'The technician has not submitted the job report yet');
       if (!String(req.body?.signature || '').startsWith('data:image')) fail(400, 'Signature image missing');
-      db.prepare('UPDATE jobs SET salesman_signature = ?, salesman_signed_at = ?, salesman_id = COALESCE(salesman_id, ?) WHERE id = ?').run(
+      // The signer is the job's salesman from now on, so the report shows their name under the signature.
+      db.prepare('UPDATE jobs SET salesman_signature = ?, salesman_signed_at = ?, salesman_id = COALESCE(salesman_id, created_by, ?) WHERE id = ?').run(
         req.body.signature,
         nowStamp(),
-        req.user.role === 'salesman' ? req.user.id : null,
+        req.user.id,
         job.id
       );
       logJob(db, job.id, req.user.id, 'salesman_signed');
@@ -1102,6 +1105,27 @@ function num(v) {
   return Number.isFinite(n) ? n : 0;
 }
 
+// Only the job's own salesman signs the report and marks the job as done – not other salesmen, not admin.
+// The owner is the job's salesman (whoever posted it, unless admin posted it for a salesman or moved it
+// when someone left), else whoever posted it. A job nobody posted (made by a service contract) goes to
+// the first staff member who signs it.
+function jobOwner(db, job) {
+  const id = job.salesman_id ?? job.created_by ?? null;
+  return id ? (db.prepare('SELECT id, name FROM users WHERE id = ?').get(id) ?? { id, name: 'its salesman' }) : null;
+}
+
+function isOwner(db, job, user) {
+  if (!STAFF.includes(user.role)) return false;
+  const owner = jobOwner(db, job);
+  return owner ? owner.id === user.id : true;
+}
+
+function requireOwner(db, job, user, what) {
+  if (isOwner(db, job, user)) return;
+  const owner = jobOwner(db, job);
+  fail(403, owner ? `This job belongs to ${owner.name} – only they can ${what}.` : `Only staff can ${what}.`);
+}
+
 // Warranty months chosen on a job: blank = the job type's default, otherwise a whole number of months.
 function warrantyMonths(v) {
   if (v === '' || v == null) return null;
@@ -1167,6 +1191,11 @@ function jobDetail(db, job, user) {
        WHERE l.job_id = ? ORDER BY l.id DESC`
     )
     .all(job.id);
+  // Who signs the report and marks the job as done (not owner_name, which is the building owner on the report).
+  const owner = jobOwner(db, full);
+  full.sign_off_id = owner?.id ?? null;
+  full.sign_off_name = owner?.name ?? null;
+  full.can_sign_off = isOwner(db, full, user);
   if (user.role !== 'salesman') {
     const lines = jobIncentive(db, job.id);
     full.incentive = user.role === 'technician' ? lines.filter((l) => l.technician_id === user.id) : lines;

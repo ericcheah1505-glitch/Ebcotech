@@ -107,6 +107,9 @@ export function JobView({ id, onChanged }: { id: number; onChanged?: () => void 
   // Technician has sent the job report; only the salesman/admin can now mark the job as done.
   const submitted = job.status === 'in_progress' && !!job.submitted_at;
   const hasReport = submitted || job.status === 'completed';
+  // Only the job's owner signs the report and marks it as done (not other salesmen, not admin).
+  const canSignOff = job.can_sign_off;
+  const ownerName = job.sign_off_name ?? 'the salesman';
 
   const run = async (fn: () => Promise<JobDetail | void>, after?: () => void) => {
     setBusy(true);
@@ -218,7 +221,9 @@ export function JobView({ id, onChanged }: { id: number; onChanged?: () => void 
           <span className="font-bold text-wait">Job report submitted – waiting for salesman</span>
           <Muted>
             Finished on site {niceDateTime(job.submitted_at)}.{' '}
-            {isStaff ? 'Check the report, sign it, then mark the job as done.' : 'The salesman will check it and mark the job as done.'}
+            {canSignOff
+              ? 'Check the report, sign it, then mark the job as done.'
+              : `${isStaff ? ownerName : 'The salesman'} will check it, sign it and mark the job as done.`}
           </Muted>
         </Card>
       )}
@@ -259,8 +264,18 @@ export function JobView({ id, onChanged }: { id: number; onChanged?: () => void 
             onPress={() => setPanel(panel === 'complete' ? null : 'complete')}
           />
         )}
-        {isStaff && hasReport && <Button title={job.salesman_signature ? '👁 Review report / sign again' : '✍ Review & sign report'} onPress={() => setReviewing(true)} />}
-        {isStaff && canWork && (
+        {canSignOff && hasReport && <Button title={job.salesman_signature ? '👁 Review report / sign again' : '✍ Review & sign report'} onPress={() => setReviewing(true)} />}
+        {isStaff && !canSignOff && hasReport && <Button variant="secondary" title="👁 View report" onPress={() => setReviewing(true)} />}
+        {isStaff && !canSignOff && canWork && (
+          <Card className="border border-line">
+            <span className="font-bold">This job belongs to {ownerName}</span>
+            <Muted>
+              Only {ownerName} can sign the report and mark this job as done.
+              {isAdmin ? ' To hand it to another salesman, use Edit → Salesman.' : ''}
+            </Muted>
+          </Card>
+        )}
+        {canSignOff && canWork && (
           <>
             {(submitted || !!job.salesman_signature) && (
               <Card>
@@ -542,10 +557,14 @@ export function JobView({ id, onChanged }: { id: number; onChanged?: () => void 
         job={job}
         visible={reviewing}
         onClose={() => setReviewing(false)}
-        onSign={() => {
-          setReviewing(false);
-          setSigning('salesman');
-        }}
+        onSign={
+          canSignOff
+            ? () => {
+                setReviewing(false);
+                setSigning('salesman');
+              }
+            : undefined
+        }
       />
       <SignaturePad
         visible={signing !== null}

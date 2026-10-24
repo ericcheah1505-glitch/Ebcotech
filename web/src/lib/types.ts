@@ -86,6 +86,7 @@ export type Photo = {
 
 export type JobDetail = JobSummary & {
   job_type_id: number;
+  type_warranty_months: number; // the job type's default warranty
   customer_phone: string | null;
   description: string | null;
   salesman_id: number | null;
@@ -150,7 +151,46 @@ export type Reminders = {
   warranty_expiring?: JobSummary[];
   awaiting_signature?: JobSummary[];
   awaiting_done?: JobSummary[];
+  warranty_followup?: { count: number; callbacks: WarrantyFollowup[] };
 };
+
+export type FollowupStatus = 'new' | 'contacted' | 'quoted' | 'callback' | 'declined' | 'booked';
+
+// A customer whose warranty ends soon (or just ended), from the job that gave the warranty.
+export type WarrantyFollowup = {
+  job_id: number;
+  job_no: string;
+  customer_name: string;
+  customer_phone: string | null;
+  address: string | null;
+  product_model: string | null;
+  product_variant: string | null;
+  inv_do_no: string | null;
+  completed_at: string;
+  warranty_end: string;
+  warranty_months: number | null;
+  job_type_id: number;
+  job_type: string;
+  salesman_id: number | null;
+  salesman_name: string | null;
+  status: FollowupStatus;
+  note: string | null;
+  callback_date: string | null;
+  contacted_at: string | null;
+  contacted_by_name: string | null;
+  booked_job_id: number | null;
+  booked_job_no: string | null;
+  booked_contract_id: number | null;
+  updated_at: string | null;
+  updated_by_name: string | null;
+  has_contract: boolean;
+  days_left: number;
+  expired: boolean;
+  callback_due: boolean;
+  possible_match: { id: number; job_no: string; job_type: string; created_at: string } | null;
+};
+
+export type WarrantyFollowupList = { from: string; to: string; items: WarrantyFollowup[]; callbacks_due: WarrantyFollowup[] };
 
 export type InstalledReport = {
   from: string;

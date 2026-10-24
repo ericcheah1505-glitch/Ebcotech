@@ -785,3 +785,169 @@ test('incentive statement for the staff meeting: admin only, no customer names, 
     server.close();
   }
 });
+
+test('warranty: job type default, 1 year when a controller/motor is replaced, other months, end date follows edits', async () => {
+  const { server, call, login } = await setup();
+  try {
+    const admin = await login('admin', 'admin123');
+    const users = await call(admin, 'GET', '/users');
+    const t1 = users.find((u) => u.username === 'tech1').id;
+    const types = await call(admin, 'GET', '/job-types');
+    const servicing = types.find((t) => t.name.startsWith('Servicing'));
+    assert.equal(servicing.warranty_months, 3); // company rule: service 3 months
+    const post = (extra = {}) => call(admin, 'POST', '/jobs', { job_type_id: servicing.id, customer_name: 'Warranty Co', technician_ids: [t1], ...extra });
+
+    // Default: the job type's 3 months
+    const plain = await post();
+    const done1 = await finishJob(call, admin, plain.id);
+    const doneDay = done1.completed_at.slice(0, 10);
+    assert.equal(done1.warranty_months, 3);
+    assert.equal(done1.warranty_end, addMonths(doneDay, 3));
+
+    // Chosen when posting: 1 year because the controller was replaced
+    const year = await post({ warranty_months: 12 });
+    assert.equal((await finishJob(call, admin, year.id)).warranty_end, addMonths(doneDay, 12));
+
+    // Confirmed by the salesman when marking the job as done
+    const atDone = await post();
+    await call(admin, 'POST', `/jobs/${atDone.id}/submit-report`, { work_done: 'Replaced motor' });
+    await call(admin, 'POST', `/jobs/${atDone.id}/salesman-signature`, { signature: SIG });
+    const done3 = await call(admin, 'POST', `/jobs/${atDone.id}/status`, { status: 'completed', warranty_months: 12 });
+    assert.equal(done3.warranty_months, 12);
+    assert.equal(done3.warranty_end, addMonths(doneDay, 12));
+
+    // Changing the months of a completed job moves the end date (it used to stay)
+    const edited = await call(admin, 'PUT', `/jobs/${plain.id}`, { warranty_months: 6 });
+    assert.equal(edited.warranty_end, addMonths(doneDay, 6));
+    assert.ok(edited.logs.some((l) => l.action === 'warranty' && /6 months/.test(l.note)));
+    const back = await call(admin, 'PUT', `/jobs/${plain.id}`, { warranty_months: '' }); // back to the default
+    assert.equal(back.warranty_months, 3);
+    assert.equal(back.warranty_end, addMonths(doneDay, 3));
+
+    await assert.rejects(post({ warranty_months: 'abc' }), /whole number of months/);
+  } finally {
+    server.close();
+  }
+});
+
+test('old servicing warranty of 1 month becomes 3 months once; admin changes afterwards are kept', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ebcotech-db-'));
+  const file = path.join(dir, 'autodoor.db');
+  try {
+    const months = (db) => db.prepare(`SELECT warranty_months AS m FROM job_types WHERE name = 'Servicing / Maintenance'`).get().m;
+    let db = openDb(file);
+    // Make it look like a database from before the change
+    db.exec(`UPDATE job_types SET warranty_months = 1 WHERE name = 'Servicing / Maintenance';
+             DELETE FROM settings WHERE key = 'migrated_service_warranty_3m';`);
+    db.close();
+    db = openDb(file);
+    assert.equal(months(db), 3);
+    db.exec(`UPDATE job_types SET warranty_months = 1 WHERE name = 'Servicing / Maintenance'`); // admin's own choice
+    db.close();
+    db = openDb(file);
+    assert.equal(months(db), 1);
+    db.close();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('warranty follow-up: own customers, automatic contacted/booked/expired, statuses by hand, Today count', async () => {
+  const { db, server, call, login } = await setup();
+  try {
+    const admin = await login('admin', 'admin123');
+    const sales = await login('sales1', 'sales123');
+    const tech = await login('tech1', 'tech123');
+    const users = await call(admin, 'GET', '/users');
+    const t1 = users.find((u) => u.username === 'tech1').id;
+    const types = await call(admin, 'GET', '/job-types');
+    const install = types.find((t) => t.name === 'Installation');
+    const servicing = types.find((t) => t.name.startsWith('Servicing'));
+    const t = today();
+    const day = (n) => {
+      const d = new Date();
+      d.setDate(d.getDate() + n);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    };
+    // A completed installation whose warranty ends on a chosen day
+    const doneJob = async (token, name, endsIn, extra = {}) => {
+      const j = await call(token, 'POST', '/jobs', { job_type_id: install.id, customer_name: name, customer_phone: '012-345 6789', technician_ids: [t1], ...extra });
+      await finishJob(call, token, j.id);
+      db.prepare('UPDATE jobs SET warranty_end = ? WHERE id = ?').run(day(endsIn), j.id);
+      return j;
+    };
+    const mine = await doneJob(sales, 'Sales Customer', 10);
+    const other = await doneJob(admin, 'Admin Customer', 20);
+    const ended = await doneJob(admin, 'Ended Customer', -5);
+    const far = await doneJob(admin, 'Far Customer', 75);
+    await doneJob(admin, 'Claim Customer', 5, { under_warranty: true }); // warranty claim: left out
+
+    const list = (token, q = '') => call(token, 'GET', `/warranty-followups${q}`);
+    const names = (r) => r.items.map((i) => i.customer_name);
+
+    // Admin sees everyone ending in 30 days; salesman only their own; technicians not at all
+    assert.deepEqual(names(await list(admin)), ['Sales Customer', 'Admin Customer']);
+    assert.deepEqual(names(await list(sales)), ['Sales Customer']);
+    await assert.rejects(list(tech), (e) => e.status === 403);
+    assert.deepEqual(names(await list(admin, '?range=90')), ['Sales Customer', 'Admin Customer', 'Far Customer']);
+    const endedList = await list(admin, '?range=ended');
+    assert.deepEqual(names(endedList), ['Ended Customer']);
+    assert.equal(endedList.items[0].expired, true);
+    assert.equal((await list(admin)).items[0].days_left, 10);
+
+    // Salesman can't touch another salesman's customer
+    await assert.rejects(call(sales, 'POST', `/warranty-followups/${other.id}/contacted`, { via: 'call' }), (e) => e.status === 403);
+
+    // Tapping WhatsApp records "contacted" automatically, but never downgrades a later status
+    let item = await call(sales, 'POST', `/warranty-followups/${mine.id}/contacted`, { via: 'whatsapp' });
+    assert.equal(item.status, 'contacted');
+    assert.equal(item.contacted_by_name, 'Sample Salesman');
+    item = await call(sales, 'POST', `/warranty-followups/${mine.id}`, { status: 'quoted', note: 'Q-1001 RM 450' });
+    assert.equal(item.status, 'quoted');
+    item = await call(sales, 'POST', `/warranty-followups/${mine.id}/contacted`, { via: 'call' });
+    assert.equal(item.status, 'quoted');
+
+    // By hand: declined needs a reason, call back needs a date
+    await assert.rejects(call(admin, 'POST', `/warranty-followups/${other.id}`, { status: 'declined' }), /reason/);
+    await assert.rejects(call(admin, 'POST', `/warranty-followups/${other.id}`, { status: 'callback' }), /date/);
+    item = await call(admin, 'POST', `/warranty-followups/${other.id}`, { status: 'callback', callback_date: t, note: 'Busy this week' });
+    assert.equal(item.callback_due, true);
+    const reminders = await call(admin, 'GET', '/reminders');
+    assert.deepEqual(reminders.warranty_followup.callbacks.map((c) => c.customer_name), ['Admin Customer']);
+    assert.equal(reminders.warranty_followup.count, 2);
+    assert.equal((await call(sales, 'GET', '/reminders')).warranty_followup.count, 1);
+    assert.equal((await call(tech, 'GET', '/reminders')).warranty_followup, undefined);
+
+    // A servicing job created from the follow-up books the customer automatically
+    const booked = await call(sales, 'POST', '/jobs', { job_type_id: servicing.id, customer_name: 'Sales Customer', warranty_followup_job_id: mine.id });
+    item = (await list(sales, '?show=booked')).items[0];
+    assert.equal(item.status, 'booked');
+    assert.equal(item.booked_job_no, booked.job_no);
+    assert.deepEqual(names(await list(sales)), []); // nothing left to follow up
+    const history = (await call(admin, 'GET', `/jobs/${mine.id}`)).logs.map((l) => l.note);
+    assert.ok(history.includes(`Follow-up: booked – job ${booked.job_no}`));
+    assert.ok(history.includes('Follow-up: quoted – Q-1001 RM 450'));
+
+    // A service contract created from the follow-up books it too
+    const contract = await call(admin, 'POST', '/contracts', {
+      customer_name: 'Far Customer', job_type_id: servicing.id, start_date: day(76), warranty_followup_job_id: far.id,
+    });
+    const farItem = (await list(admin, '?range=90&show=all')).items.find((i) => i.job_id === far.id);
+    assert.equal(farItem.status, 'booked');
+    assert.equal(farItem.booked_contract_id, contract.id);
+
+    // A job posted the usual way for the same customer is suggested, not decided
+    await call(admin, 'POST', '/jobs', { job_type_id: servicing.id, customer_name: 'ended customer ' });
+    const suggestion = (await list(admin, '?range=ended')).items[0];
+    assert.equal(suggestion.status, 'new');
+    assert.ok(suggestion.possible_match);
+    item = await call(admin, 'POST', `/warranty-followups/${ended.id}`, { status: 'booked', booked_job_id: suggestion.possible_match.id });
+    assert.equal(item.booked_job_no, suggestion.possible_match.job_no);
+
+    // Declined customers move to the Declined list
+    await call(admin, 'POST', `/warranty-followups/${other.id}`, { status: 'declined', note: 'Using another company' });
+    assert.deepEqual(names(await list(admin, '?show=declined')), ['Admin Customer']);
+  } finally {
+    server.close();
+  }
+});

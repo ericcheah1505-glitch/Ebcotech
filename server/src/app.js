@@ -10,6 +10,7 @@ import {
   logJob,
   COMPLETION_FIELDS,
   POSTING_FIELDS,
+  refreshWarranty,
   reminders,
   setReportFields,
 } from './automation.js';
@@ -19,7 +20,8 @@ import { getSettings, idleLabel, saveSettings } from './settings.js';
 import { previewHtml, reportHtml, reportPdf } from './report.js';
 import { incentiveWorkbook, installedWorkbook, jobsWorkbook } from './exports.js';
 import { STATEMENT_PDF_OPTIONS, statementHtml } from './statement.js';
-import { isValidDate, nowStamp, today } from './dates.js';
+import { addDays, isValidDate, nowStamp, today } from './dates.js';
+import { callbacksDue, FOLLOWUP_STATUSES, followupItem, followups, followupStatusOf, setFollowup } from './warranty.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { decodeImage, MAX_PHOTOS_PER_JOB, mimeFor, photoPath, removePhotoFile, savePhotoFile } from './photos.js';
@@ -407,14 +409,16 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
     wrap((req) => {
       const b = req.body || {};
       validateJob(b);
+      const warranty = warrantyMonths(b.warranty_months);
+      const followup = b.warranty_followup_job_id ? followupJob(req, b.warranty_followup_job_id) : null;
       const techIds = (b.technician_ids || []).map(Number);
       const status = techIds.length ? 'assigned' : 'pending';
       const salesmanId = b.salesman_id || (req.user.role === 'salesman' ? req.user.id : null);
       const { lastInsertRowid } = db
         .prepare(
           `INSERT INTO jobs (job_type_id, customer_name, customer_phone, address, description, scheduled_date,
-             scheduled_time, status, salesman_id, created_by, under_warranty, incentive_cap)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             scheduled_time, status, salesman_id, created_by, under_warranty, incentive_cap, warranty_months)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           b.job_type_id,
@@ -428,13 +432,18 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
           salesmanId,
           req.user.id,
           b.under_warranty ? 1 : 0,
-          req.user.role === 'admin' ? optNum(b.incentive_cap) : null
+          req.user.role === 'admin' ? optNum(b.incentive_cap) : null,
+          warranty
         );
       const id = Number(lastInsertRowid);
-      assignJobNo(db, id);
+      const jobNo = assignJobNo(db, id);
       setTechnicians(db, id, techIds);
       setReportFields(db, id, b, POSTING_FIELDS);
       logJob(db, id, req.user.id, 'created');
+      if (followup) {
+        logJob(db, id, req.user.id, 'warranty', `From the warranty follow-up of ${followup.job_no}`);
+        setFollowup(db, followup.id, req.user.id, { status: 'booked', note: null, callback_date: null, booked_job_id: id, booked_contract_id: null }, `Follow-up: booked – job ${jobNo}`);
+      }
       return jobDetail(db, db.prepare('SELECT * FROM jobs WHERE id = ?').get(id), req.user);
     })
   );
@@ -459,7 +468,7 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
         b.scheduled_date || null,
         b.scheduled_time || null,
         b.salesman_id || null,
-        b.warranty_months === '' || b.warranty_months == null ? null : num(b.warranty_months),
+        warrantyMonths(b.warranty_months),
         b.under_warranty ? 1 : 0,
         req.user.role === 'admin' ? optNum(b.incentive_cap) : job.incentive_cap,
         nowStamp(),
@@ -476,6 +485,8 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
       }
       setReportFields(db, job.id, req.body, POSTING_FIELDS);
       logJob(db, job.id, req.user.id, 'edited');
+      const warrantyNote = refreshWarranty(db, job.id); // completed jobs only
+      if (warrantyNote) logJob(db, job.id, req.user.id, 'warranty', warrantyNote);
       return jobDetail(db, db.prepare('SELECT * FROM jobs WHERE id = ?').get(job.id), req.user);
     })
   );
@@ -497,6 +508,7 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
       const stamp = nowStamp();
       if (to === 'completed') {
         if (!job.salesman_signature) fail(400, 'The salesman must sign the report before the job can be marked as done');
+        if ('warranty_months' in b) db.prepare('UPDATE jobs SET warranty_months = ? WHERE id = ?').run(warrantyMonths(b.warranty_months), job.id);
         completeJob(db, job.id, req.user.id, b);
       } else if (to === 'kiv') {
         if (!b.kiv_reason) fail(400, 'Please give the KIV reason (what are we waiting for?)');
@@ -820,7 +832,15 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
     '/api/reminders',
     wrap((req) => {
       generateContractJobsIfDue(db);
-      return reminders(db, req.user);
+      const out = reminders(db, req.user);
+      if (req.user.role !== 'technician') {
+        const t = today();
+        out.warranty_followup = {
+          count: followups(db, req.user, { from: t, to: addDays(t, 30) }).length,
+          callbacks: callbacksDue(db, req.user),
+        };
+      }
+      return out;
     })
   );
 
@@ -904,12 +924,16 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
       if (!b.customer_name || !b.job_type_id || !isValidDate(b.start_date)) fail(400, 'Customer, job type and start date (YYYY-MM-DD) are required');
       if (b.end_date && !isValidDate(b.end_date)) fail(400, 'End date must be YYYY-MM-DD');
       const next = b.next_service_date && isValidDate(b.next_service_date) ? b.next_service_date : b.start_date;
+      const followup = b.warranty_followup_job_id ? followupJob(req, b.warranty_followup_job_id) : null;
       const { lastInsertRowid } = db
         .prepare(
           `INSERT INTO service_contracts (customer_name, customer_phone, address, job_type_id, interval_months,
              start_date, end_date, next_service_date, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(b.customer_name, b.customer_phone || null, b.address || null, b.job_type_id, num(b.interval_months) || 3, b.start_date, b.end_date || null, next, b.notes || null);
+      if (followup) {
+        setFollowup(db, followup.id, req.user.id, { status: 'booked', note: null, callback_date: null, booked_job_id: null, booked_contract_id: Number(lastInsertRowid) }, 'Follow-up: booked – service contract');
+      }
       generateContractJobs(db);
       return db.prepare('SELECT * FROM service_contracts WHERE id = ?').get(lastInsertRowid);
     })
@@ -933,6 +957,83 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
   );
 
   app.post('/api/contracts/run', requireRole('admin'), wrap(() => ({ created: generateContractJobs(db) })));
+
+  // ---------- Warranty follow-up (see warranty.js) ----------
+  // A completed job that has a warranty; salesmen may only follow up their own customers.
+  function followupJob(req, jobId) {
+    const job = db.prepare('SELECT id, job_no, status, warranty_end, salesman_id, created_by FROM jobs WHERE id = ?').get(Number(jobId)) || fail(404, 'Job not found');
+    if (job.status !== 'completed' || !job.warranty_end) fail(400, 'This job has no warranty to follow up');
+    if (req.user.role === 'salesman' && job.salesman_id !== req.user.id && job.created_by !== req.user.id) {
+      fail(403, 'This customer belongs to another salesman');
+    }
+    return job;
+  }
+
+  // range: 30 / 60 / 90 = warranty ending in the next so many days; ended = ended in the last 30 days.
+  app.get(
+    '/api/warranty-followups',
+    requireRole(...STAFF),
+    wrap((req) => {
+      const t = today();
+      const ended = req.query.range === 'ended';
+      const days = [30, 60, 90].includes(Number(req.query.range)) ? Number(req.query.range) : 30;
+      const from = ended ? addDays(t, -30) : t;
+      const to = ended ? addDays(t, -1) : addDays(t, days);
+      const show = ['open', 'booked', 'declined', 'all'].includes(req.query.show) ? req.query.show : 'open';
+      const salesmanId = req.query.salesman_id ? Number(req.query.salesman_id) : null;
+      return { from, to, items: followups(db, req.user, { from, to, show, salesmanId }), callbacks_due: callbacksDue(db, req.user) };
+    })
+  );
+
+  // Status set by hand: quoted, call back later (with a date), declined (with the reason), booked, ...
+  app.post(
+    '/api/warranty-followups/:jobId',
+    requireRole(...STAFF),
+    wrap((req) => {
+      const job = followupJob(req, req.params.jobId);
+      const b = req.body || {};
+      const status = b.status;
+      if (!FOLLOWUP_STATUSES.includes(status)) fail(400, 'Unknown follow-up status');
+      const note = String(b.note ?? '').trim() || null;
+      if (status === 'declined' && !note) fail(400, 'Please give the reason the customer declined');
+      if (status === 'callback' && !isValidDate(b.callback_date)) fail(400, 'Please choose the date to call back');
+      let bookedJobId = null;
+      if (status === 'booked' && b.booked_job_id) {
+        bookedJobId = (db.prepare('SELECT id FROM jobs WHERE id = ?').get(Number(b.booked_job_id)) || fail(404, 'Booked job not found')).id;
+      }
+      const changes = {
+        status,
+        note,
+        callback_date: status === 'callback' ? b.callback_date : null,
+        booked_job_id: bookedJobId,
+        booked_contract_id: null,
+      };
+      if (status === 'contacted') Object.assign(changes, { contacted_at: nowStamp(), contacted_by: req.user.id });
+      const bookedNo = bookedJobId ? db.prepare('SELECT job_no FROM jobs WHERE id = ?').get(bookedJobId).job_no : null;
+      const historyNote =
+        status === 'callback'
+          ? `Follow-up: call back on ${b.callback_date}${note ? ` – ${note}` : ''}`
+          : bookedNo
+            ? `Follow-up: booked – job ${bookedNo}`
+            : undefined;
+      setFollowup(db, job.id, req.user.id, changes, historyNote);
+      return followupItem(db, job.id);
+    })
+  );
+
+  // Tapping WhatsApp or Call in the follow-up list records the contact automatically.
+  app.post(
+    '/api/warranty-followups/:jobId/contacted',
+    requireRole(...STAFF),
+    wrap((req) => {
+      const job = followupJob(req, req.params.jobId);
+      const via = req.body?.via === 'call' ? 'call' : 'whatsapp';
+      const changes = { contacted_at: nowStamp(), contacted_by: req.user.id };
+      if (followupStatusOf(db, job.id) === 'new') changes.status = 'contacted';
+      setFollowup(db, job.id, req.user.id, changes, via === 'call' ? 'Follow-up: phone call' : 'Follow-up: WhatsApp opened');
+      return followupItem(db, job.id);
+    })
+  );
 
   app.use((err, req, res, next) => {
     const status = err.status || (String(err.message).includes('UNIQUE') ? 409 : 500);
@@ -1001,6 +1102,14 @@ function num(v) {
   return Number.isFinite(n) ? n : 0;
 }
 
+// Warranty months chosen on a job: blank = the job type's default, otherwise a whole number of months.
+function warrantyMonths(v) {
+  if (v === '' || v == null) return null;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 0 || n > 120) fail(400, 'Warranty must be a whole number of months (0 to 120)');
+  return n;
+}
+
 function validateJob(b) {
   if (!b.customer_name || !b.job_type_id) fail(400, 'Customer name and job type are required');
   if (b.scheduled_date && !isValidDate(b.scheduled_date)) fail(400, 'Date must be YYYY-MM-DD');
@@ -1025,7 +1134,8 @@ function loadJob(db, req) {
 function jobDetail(db, job, user) {
   const full = db
     .prepare(
-      `SELECT j.*, jt.name AS job_type, s.name AS salesman_name, c.name AS created_by_name
+      `SELECT j.*, jt.name AS job_type, jt.warranty_months AS type_warranty_months, s.name AS salesman_name,
+              c.name AS created_by_name
        FROM jobs j JOIN job_types jt ON jt.id = j.job_type_id
        LEFT JOIN users s ON s.id = j.salesman_id LEFT JOIN users c ON c.id = j.created_by
        WHERE j.id = ?`

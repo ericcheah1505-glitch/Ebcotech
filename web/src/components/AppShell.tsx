@@ -30,6 +30,7 @@ function useNav() {
     { href: '/jobs/', label: 'Jobs', icon: '🛠', show: true },
     { href: '/incentive/', label: 'Incentive', icon: '💰', show: !isSales },
     { href: '/installed/', label: 'Installed models', icon: '🚪', show: !isSales || salesInstalled },
+    { href: '/warranty/', label: 'Warranty follow-up', icon: '🛡', show: staff },
     { href: '/contracts/', label: 'Service contracts', icon: '📄', show: staff },
     { href: '/admin/staff/', label: 'Staff', icon: '👥', show: isAdmin },
     { href: '/admin/rates/', label: 'Job types & rates', icon: '💲', show: isAdmin },

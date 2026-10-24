@@ -154,6 +154,23 @@ function migrate(db) {
       created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
     );
 
+    -- Follow-up of customers whose warranty is ending, keyed by the job that gave the warranty.
+    -- new / contacted / quoted / callback (call back on callback_date) / declined (reason in note) /
+    -- booked (a servicing job or service contract was made from the follow-up).
+    CREATE TABLE IF NOT EXISTS warranty_followups (
+      job_id INTEGER PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'new'
+        CHECK (status IN ('new','contacted','quoted','callback','declined','booked')),
+      note TEXT,
+      callback_date TEXT,
+      contacted_at TEXT,
+      contacted_by INTEGER REFERENCES users(id),
+      booked_job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+      booked_contract_id INTEGER REFERENCES service_contracts(id) ON DELETE SET NULL,
+      updated_at TEXT,
+      updated_by INTEGER REFERENCES users(id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_jobs_date ON jobs(scheduled_date);
     CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
   `);
@@ -181,6 +198,15 @@ function migrate(db) {
   // Technician's job report, waiting for the salesman to mark the job as done.
   addColumn(db, 'jobs', 'submitted_at', 'TEXT');
   addColumn(db, 'jobs', 'submitted_by', 'INTEGER REFERENCES users(id)');
+
+  // Company rule (Oct 2026): servicing has a 3-month warranty (1 year when a controller or motor is
+  // replaced – chosen on the job). Changes the old 1-month default once; later admin edits are kept.
+  if (!db.prepare(`SELECT 1 FROM settings WHERE key = 'migrated_service_warranty_3m'`).get()) {
+    db.exec(`
+      UPDATE job_types SET warranty_months = 3 WHERE name = 'Servicing / Maintenance' AND warranty_months = 1;
+      INSERT INTO settings (key, value) VALUES ('migrated_service_warranty_3m', '1');
+    `);
+  }
 
   // Model names renamed in Oct 2026 (EASY -> HH150 EASY, ...); single/double became its own field.
   db.exec(`
@@ -217,7 +243,7 @@ function seed(db) {
   addType.run('Installation', 12, 60, 40);
   db.prepare("UPDATE job_types SET incentive_cap = 200 WHERE name = 'Installation'").run(); // RM200 shared limit per job
   addType.run('Repair / Breakdown', 3, 30, 20);
-  addType.run('Servicing / Maintenance', 1, 30, 20);
+  addType.run('Servicing / Maintenance', 3, 30, 20); // 1 year when a controller or motor is replaced
   addType.run('Inspection / Survey', 0, 0, 0);
 
   const addExtra = db.prepare(

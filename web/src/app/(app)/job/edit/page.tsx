@@ -10,9 +10,13 @@ import type { JobDetail, JobSummary, JobType, User } from '@/lib/types';
 import { PageHeader } from '@/components/AppShell';
 import { ChoiceWithOther } from '@/components/ChoiceWithOther';
 import { Button, Card, Chips, DateField, Field, Loading, Muted, Screen, Title, Toggle } from '@/components/ui';
+import { WarrantyChoice } from '@/components/WarrantyChoice';
 
 function EditJob() {
-  const id = useSearchParams().get('id');
+  const params = useSearchParams();
+  const id = params.get('id');
+  // "Create servicing job" on the warranty follow-up page: customer details copied from that job.
+  const fromWarranty = id ? null : params.get('from_warranty');
   const router = useRouter();
   const { user } = useAuth();
   const [types, setTypes] = useState<JobType[]>([]);
@@ -33,6 +37,8 @@ function EditJob() {
   const [underWarranty, setUnderWarranty] = useState(false);
   const [warrantyTouched, setWarrantyTouched] = useState(false);
   const [warrantyHits, setWarrantyHits] = useState<JobSummary[]>([]);
+  const [completedUntil, setCompletedUntil] = useState<string | null | undefined>(undefined); // completed job: its warranty end
+  const [fromJob, setFromJob] = useState<JobDetail | null>(null);
   const [cap, setCap] = useState('');
   const [model, setModel] = useState<string | null>(null);
   const [variant, setVariant] = useState<string | null>(null);
@@ -59,7 +65,8 @@ function EditJob() {
           setTime(j.scheduled_time);
           setTechIds(j.technicians.map((x) => x.id));
           setSalesmanId(j.salesman_id);
-          setWarranty(j.warranty_months == null ? '' : String(j.warranty_months));
+          setWarranty(j.warranty_months == null || j.warranty_months === j.type_warranty_months ? '' : String(j.warranty_months));
+          if (j.status === 'completed') setCompletedUntil(j.warranty_end);
           setUnderWarranty(!!j.under_warranty);
           setWarrantyTouched(true);
           setCap(j.incentive_cap == null ? '' : String(j.incentive_cap));
@@ -70,13 +77,30 @@ function EditJob() {
           setSiteContact(j.site_contact ?? '');
           setOwnerName(j.owner_name ?? '');
           setOutstation(!!j.outstation);
+        } else if (fromWarranty) {
+          const j = await api<JobDetail>(`/jobs/${fromWarranty}`);
+          setFromJob(j);
+          const servicing = t.find((x) => x.active && /servic/i.test(x.name));
+          if (servicing) setJobTypeId(servicing.id);
+          setCustomer(j.customer_name);
+          setPhone(j.customer_phone ?? '');
+          setAddress(j.address ?? '');
+          setModel(j.product_model);
+          setVariant(j.product_variant);
+          setBrand(j.product_brand ?? HOUSE_BRAND);
+          setSiteContact(j.site_contact ?? '');
+          setOwnerName(j.owner_name ?? '');
+          setOutstation(!!j.outstation);
+          if (j.salesman_id) setSalesmanId(j.salesman_id);
+          setDescription(`Servicing after warranty (${j.job_no}, warranty until ${niceDate(j.warranty_end)})`);
+          setWarrantyTouched(true); // a paid visit offered to the customer, not a warranty claim
         }
       } catch (e: any) {
         alert(e.message);
       }
       setReady(true);
     })();
-  }, [id]);
+  }, [id, fromWarranty]);
 
   // Look up earlier jobs for this customer/address that are still under warranty.
   useEffect(() => {
@@ -123,7 +147,8 @@ function EditJob() {
         owner_name: ownerName.trim(),
         outstation,
         ...(user?.role === 'admin' ? { incentive_cap: cap } : {}),
-        ...(id ? { warranty_months: warranty } : {}),
+        warranty_months: warranty,
+        ...(fromJob ? { warranty_followup_job_id: fromJob.id } : {}),
       };
       const job = await api<JobDetail>(id ? `/jobs/${id}` : '/jobs', { method: id ? 'PUT' : 'POST', body });
       if (id) router.back();
@@ -136,12 +161,19 @@ function EditJob() {
   };
 
   const techs = staff.filter((u) => u.role === 'technician');
+  const jobType = types.find((t) => t.id === jobTypeId);
   const salesmen = staff.filter((u) => u.role === 'salesman');
 
   return (
     <>
       <PageHeader title={id ? 'Edit job' : 'Post new job'} back />
       <Screen>
+        {fromJob && (
+          <Card className="border border-success">
+            <span className="font-bold text-success">🛡 From the warranty follow-up of {fromJob.job_no}</span>
+            <Muted>Customer details are copied from that job. Posting this job marks the customer as booked.</Muted>
+          </Card>
+        )}
         <Chips label="Job type *" options={types.map((t) => ({ value: t.id, label: t.name }))} value={jobTypeId} onChange={setJobTypeId} />
         <ChoiceWithOther label="Model (product type)" options={PRODUCT_MODELS} value={model} onChange={setModel} />
         {model && VARIANT_MODELS.includes(model) && (
@@ -208,11 +240,17 @@ function EditJob() {
             <Chips label="Salesman" options={salesmen.map((s) => ({ value: s.id, label: s.name }))} value={salesmanId} onChange={setSalesmanId} />
           </>
         )}
-        {id && (
-          <>
-            <Field label="Warranty months (blank = job type default)" value={warranty} onChange={setWarranty} inputMode="numeric" />
-            <Muted>Warranty end date is calculated automatically when the job is completed.</Muted>
-          </>
+        {jobType && (
+          <WarrantyChoice
+            typeMonths={jobType.warranty_months}
+            value={warranty}
+            onChange={setWarranty}
+            note={
+              completedUntil !== undefined
+                ? `Job done – warranty ${completedUntil ? `until ${niceDate(completedUntil)}` : 'none'}. Changing it moves the end date.`
+                : 'The end date is worked out when the job is marked as done.'
+            }
+          />
         )}
         <Button title={id ? 'Save changes' : 'Post job'} onPress={save} loading={busy} className="lg:max-w-xs" />
       </Screen>

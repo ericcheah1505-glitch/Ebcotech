@@ -37,6 +37,7 @@ export default function Today() {
 
   const staff = user?.role !== 'technician';
   const waitingSign = (data?.awaiting_done?.length ?? 0) + (data?.awaiting_signature?.length ?? 0);
+  const warranty = data?.warranty_followup;
 
   return (
     <>
@@ -53,12 +54,17 @@ export default function Today() {
         {data && (
           <>
             {/* PC only: numbers at a glance */}
-            <div className="hidden gap-3 lg:grid lg:grid-cols-6">
+            <div className="hidden gap-3 lg:grid lg:grid-cols-4 2xl:grid-cols-7">
               <Tile label="Jobs today" value={data.today.length} />
               <Tile label="Overdue" value={data.overdue.length} alert={data.overdue.length > 0} />
               <Tile label="KIV" value={data.kiv.length} />
               {staff && <Tile label="Waiting signature / done" value={waitingSign} alert={waitingSign > 0} />}
               {staff && <Tile label="Unassigned" value={data.unassigned?.length ?? 0} alert={(data.unassigned?.length ?? 0) > 0} />}
+              {warranty && (
+                <Link href="/warranty/">
+                  <Tile label="Warranty follow-up (30 days)" value={warranty.count} alert={warranty.count > 0 || warranty.callbacks.length > 0} />
+                </Link>
+              )}
               {payable !== null && (
                 <Link href="/incentive/">
                   <Tile label="Incentive payable (this month)" value={rm(payable)} />
@@ -94,16 +100,28 @@ export default function Today() {
                   ))}
                 </div>
               )}
-              {data.warranty_expiring && data.warranty_expiring.length > 0 && (
+              {warranty && (
                 <div className="flex flex-col gap-3">
-                  <Title>Warranty ending in 30 days ({data.warranty_expiring.length})</Title>
-                  <Muted>Good time to offer a service contract.</Muted>
-                  {data.warranty_expiring.map((j) => (
-                    <div key={j.id}>
-                      <JobCard job={j} />
-                      <Muted>Warranty ends {niceDate(j.warranty_end)}</Muted>
-                    </div>
+                  <Title>🛡 Warranty follow-up</Title>
+                  {warranty.callbacks.map((c) => (
+                    <Link key={c.job_id} href="/warranty/">
+                      <Card className="border border-kiv">
+                        <span className="font-bold">📞 Call back: {c.customer_name}</span>
+                        <Muted>
+                          Due {niceDate(c.callback_date)}
+                          {c.note ? ` · ${c.note}` : ''}
+                        </Muted>
+                      </Card>
+                    </Link>
                   ))}
+                  <Link href="/warranty/">
+                    <Card className={warranty.count > 0 ? 'border border-warn' : ''}>
+                      <span className="font-bold">
+                        {warranty.count === 0 ? 'No warranties ending in the next 30 days' : `${warranty.count} customer${warranty.count === 1 ? '' : 's'} – warranty ending in 30 days`}
+                      </span>
+                      <Muted>Offer servicing or a service contract ›</Muted>
+                    </Card>
+                  </Link>
                 </div>
               )}
             </div>

@@ -106,6 +106,25 @@ export function completeJob(db, jobId, userId, body = {}) {
   logJob(db, jobId, userId, 'completed', warrantyEnd ? `Marked as done · warranty until ${warrantyEnd}` : 'Marked as done');
 }
 
+export const monthsLabel = (m) => (m > 0 && m % 12 === 0 ? `${m / 12} year${m > 12 ? 's' : ''}` : `${m} month${m === 1 ? '' : 's'}`);
+
+// Works the warranty end out again from the completion date, after the warranty months or the job type
+// of a completed job were changed. Returns a note for the job history when the end date moved.
+export function refreshWarranty(db, jobId) {
+  const j = db
+    .prepare(
+      `SELECT j.completed_at, j.warranty_months, j.warranty_end, jt.warranty_months AS type_warranty
+       FROM jobs j JOIN job_types jt ON jt.id = j.job_type_id WHERE j.id = ? AND j.status = 'completed'`
+    )
+    .get(jobId);
+  if (!j?.completed_at) return null;
+  const months = j.warranty_months ?? j.type_warranty;
+  const end = months > 0 ? addMonths(j.completed_at.slice(0, 10), months) : null;
+  db.prepare('UPDATE jobs SET warranty_months = ?, warranty_end = ? WHERE id = ?').run(months, end, jobId);
+  if (end === j.warranty_end) return null;
+  return end ? `Warranty changed to ${monthsLabel(months)} · until ${end}` : 'Warranty removed';
+}
+
 // Creates a pending servicing job for every active contract due within `daysAhead` days,
 // once per contract cycle. Safe to run repeatedly.
 export function generateContractJobs(db, daysAhead = 14) {

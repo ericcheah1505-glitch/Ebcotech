@@ -11,6 +11,7 @@ export default function More() {
   const staff = user?.role === 'admin' || user?.role === 'salesman';
   const links = [
     { title: 'Change my password', desc: 'Choose a password only you know', href: '/change-password/', show: true },
+    { title: 'Warranty follow-up', desc: 'Customers whose warranty ends soon – offer servicing or a contract', href: '/warranty/', show: staff },
     { title: 'Service contracts', desc: 'Customers with scheduled servicing; jobs are auto-created before due date', href: '/contracts/', show: staff },
     { title: 'Job types & incentive rates', desc: 'Senior/junior rates, warranty months, extra situations (welding etc.)', href: '/admin/rates/', show: user?.role === 'admin' },
     { title: 'Settings', desc: 'What salesmen can see (Installed models report)', href: '/admin/settings/', show: user?.role === 'admin' },

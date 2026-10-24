@@ -25,6 +25,7 @@ const count = (t) => db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get().n;
 const before = { jobs: count('jobs'), contracts: count('service_contracts') };
 db.exec(`
   BEGIN;
+  DELETE FROM warranty_followups;
   DELETE FROM job_photos;
   DELETE FROM job_logs;
   DELETE FROM incentive_adjustments;

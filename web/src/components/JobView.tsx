@@ -12,6 +12,8 @@ import { ReportPreview } from './ReportPreview';
 import { SignaturePad } from './SignaturePad';
 import { SignatureSlots } from './SignatureSlots';
 import { Button, Card, Chips, DateField, Field, Loading, Muted, Row, StatusBadge, Title } from './ui';
+import { WarrantyChoice } from './WarrantyChoice';
+import { monthsLabel } from '@/lib/warranty';
 
 type Panel = null | 'kiv' | 'complete' | 'extra' | 'adjust' | 'reschedule';
 type PdfCache = { key: string; file: Promise<File> } | null;
@@ -57,6 +59,7 @@ export function JobView({ id, onChanged }: { id: number; onChanged?: () => void 
   const [newTime, setNewTime] = useState<string | null>(null);
   const [newTechs, setNewTechs] = useState<number[]>([]);
   const [allTechs, setAllTechs] = useState<User[]>([]);
+  const [doneWarranty, setDoneWarranty] = useState(''); // '' = job type default
   const pdfRef = useRef<PdfCache>(null);
 
   const setJob = useCallback(
@@ -76,6 +79,7 @@ export function JobView({ id, onChanged }: { id: number; onChanged?: () => void 
       setCustName(j.customer_sign_name || '');
       setNightWork(!!j.night_work);
       setRemarks(j.remarks || '');
+      setDoneWarranty(j.warranty_months == null || j.warranty_months === j.type_warranty_months ? '' : String(j.warranty_months));
       setPanel(null);
     } catch (e: any) {
       alert(e.message);
@@ -200,7 +204,9 @@ export function JobView({ id, onChanged }: { id: number; onChanged?: () => void 
         <Row label="Description" value={job.description} />
         {job.started_at && <Row label="Started" value={niceDateTime(job.started_at)} />}
         {job.completed_at && <Row label="Completed" value={niceDateTime(job.completed_at)} />}
-        {job.status === 'completed' && <Row label="Warranty" value={job.warranty_end ? `Until ${niceDate(job.warranty_end)} (${job.warranty_months} mth)` : 'None'} />}
+        {job.status === 'completed' && (
+          <Row label="Warranty" value={job.warranty_end ? `Until ${niceDate(job.warranty_end)} (${monthsLabel(job.warranty_months ?? 0)})` : 'None'} />
+        )}
         {job.work_done && <Row label="Work done" value={job.work_done} />}
         {job.remarks && <Row label="Remarks" value={job.remarks} />}
         {job.customer_comment && <Row label="Customer comment" value={job.customer_comment} />}
@@ -256,6 +262,11 @@ export function JobView({ id, onChanged }: { id: number; onChanged?: () => void 
         {isStaff && hasReport && <Button title={job.salesman_signature ? '👁 Review report / sign again' : '✍ Review & sign report'} onPress={() => setReviewing(true)} />}
         {isStaff && canWork && (
           <>
+            {(submitted || !!job.salesman_signature) && (
+              <Card>
+                <WarrantyChoice key={job.id} typeMonths={job.type_warranty_months} value={doneWarranty} onChange={setDoneWarranty} />
+              </Card>
+            )}
             <Button
               variant="success"
               title="✓ Mark job as done"
@@ -263,8 +274,15 @@ export function JobView({ id, onChanged }: { id: number; onChanged?: () => void 
               disabled={!job.salesman_signature}
               onPress={() =>
                 confirm(
-                  ['Mark job as done?', submitted ? '' : 'The technician has not submitted a job report yet.', 'Warranty and incentive will be counted.'].filter(Boolean).join('\n')
-                ) && setStatus('completed')
+                  [
+                    'Mark job as done?',
+                    submitted ? '' : 'The technician has not submitted a job report yet.',
+                    `Warranty: ${monthsLabel(doneWarranty === '' ? job.type_warranty_months : Number(doneWarranty))}.`,
+                    'Warranty and incentive will be counted.',
+                  ]
+                    .filter(Boolean)
+                    .join('\n')
+                ) && setStatus('completed', { warranty_months: doneWarranty })
               }
             />
             {!job.salesman_signature && (

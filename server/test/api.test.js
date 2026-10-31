@@ -60,7 +60,7 @@ test('full job flow: post, assign, extras, complete, warranty, signature, incent
       technician_ids: [t1, t2],
     });
     assert.equal(job.status, 'assigned');
-    assert.match(job.job_no, /^J\d{4}-\d{4}$/);
+    assert.match(job.job_no, /^J\d{4}-\d{3,}$/);
 
     const rem = await call(tech1, 'GET', '/reminders');
     assert.equal(rem.today.length, 1);

@@ -42,7 +42,7 @@ export function setReportFields(db, jobId, body, keys) {
 export function assignJobNo(db, jobId) {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const jobNo = `J${yymm}-${String(jobId).padStart(4, '0')}`;
+  const jobNo = `J${yymm}-${String(jobId).padStart(3, '0')}`;
   db.prepare('UPDATE jobs SET job_no = ? WHERE id = ?').run(jobNo, jobId);
   return jobNo;
 }

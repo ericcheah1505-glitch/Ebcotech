@@ -8,7 +8,7 @@ import { PageHeader } from '@/components/AppShell';
 import { Button, Card, cx, Field, Muted, Screen, Title, Toggle } from '@/components/ui';
 
 type Editing =
-  | { kind: 'type'; id?: number; name: string; warranty_months: string; senior: string; junior: string; cap: string; active: boolean }
+  | { kind: 'type'; id?: number; name: string; warranty_months: string; team_size: string; senior: string; junior: string; cap: string; active: boolean }
   | { kind: 'extra'; id?: number; name: string; unit: string; senior: string; junior: string; active: boolean };
 
 export default function Rates() {
@@ -31,6 +31,7 @@ export default function Rates() {
         const body = {
           name: edit.name,
           warranty_months: Number(edit.warranty_months) || 0,
+          team_size: Number(edit.team_size) || 1,
           senior_rate: Number(edit.senior) || 0,
           junior_rate: Number(edit.junior) || 0,
           incentive_cap: edit.cap === '' ? null : Number(edit.cap),
@@ -61,7 +62,14 @@ export default function Rates() {
           </Title>
           <Field label="Name" value={edit.name} onChange={(v) => set({ name: v })} />
           {edit.kind === 'type' ? (
-            <Field label="Warranty (months)" value={edit.warranty_months} onChange={(v) => set({ warranty_months: v })} inputMode="numeric" />
+            <>
+              <Field label="Warranty (months)" value={edit.warranty_months} onChange={(v) => set({ warranty_months: v })} inputMode="numeric" />
+              <Field label="Technicians per job" value={edit.team_size} onChange={(v) => set({ team_size: v })} inputMode="numeric" />
+              <Muted>
+                How many technicians this kind of job normally needs. Technicians who take open jobs can fill this many places; the incentive statement flags
+                jobs with more people than this. Admin can change it for one job when editing the job.
+              </Muted>
+            </>
           ) : (
             <Field label="Per (unit)" value={edit.unit} onChange={(v) => set({ unit: v })} placeholder="job / trip / hour / unit / metre" />
           )}
@@ -111,6 +119,7 @@ export default function Rates() {
                     id: t.id,
                     name: t.name,
                     warranty_months: String(t.warranty_months),
+                    team_size: String(t.team_size),
                     senior: String(t.senior_rate),
                     junior: String(t.junior_rate),
                     cap: t.incentive_cap == null ? '' : String(t.incentive_cap),
@@ -120,13 +129,13 @@ export default function Rates() {
                 <Card className={cx(!t.active && 'opacity-50')}>
                   <span className="font-bold text-ink">{t.name}</span>
                   <Muted>
-                    Senior {rm(t.senior_rate)} · Junior {rm(t.junior_rate)} · Warranty {t.warranty_months} mth
+                    Senior {rm(t.senior_rate)} · Junior {rm(t.junior_rate)} · Warranty {t.warranty_months} mth · {t.team_size} technician{t.team_size === 1 ? '' : 's'}
                     {t.incentive_cap != null ? ` · Job limit ${rm(t.incentive_cap)}` : ''}
                   </Muted>
                 </Card>
               </button>
             ))}
-            <Button variant="secondary" title="+ Add job type" onPress={() => setEdit({ kind: 'type', name: '', warranty_months: '0', senior: '', junior: '', cap: '', active: true })} />
+            <Button variant="secondary" title="+ Add job type" onPress={() => setEdit({ kind: 'type', name: '', warranty_months: '0', team_size: '1', senior: '', junior: '', cap: '', active: true })} />
           </div>
           <div className="flex flex-col gap-3">
             <Title>Extra situations (added on top)</Title>

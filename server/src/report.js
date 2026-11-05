@@ -52,6 +52,12 @@ function choiceRow(options, value, withOthers = true) {
 
 const time = (stamp) => (stamp ? stamp.slice(11, 16) : '');
 
+// "Site check-in: Ali 09:12 · Ben 09:20" – when each technician arrived (recorded by their phone).
+function checkins(job) {
+  const rows = (job.technicians ?? []).filter((t) => t.checked_in_at);
+  return rows.length ? `<br/>Site check-in: ${rows.map((t) => `${esc(t.name)} ${time(t.checked_in_at)}`).join(' · ')}` : '';
+}
+
 const PHOTOS_PER_PAGE = 4;
 const PHOTO_GROUPS = [
   { stage: 'before', title: 'BEFORE SERVICE', label: 'Before', color: '#B45309' },
@@ -217,6 +223,7 @@ export function reportHtml(job, photos = []) {
     </table>
     <div class="box problems${hasAccessories ? '' : ' tall'}"><div class="lbl">Problems:</div>${problems}</div>
     <div class="box comment"><div class="lbl">Customer comment:</div><div class="fill">${esc(job.customer_comment)}</div></div>
+    <div class="muted" style="margin-top:6px">By signing, the customer confirms that the technician(s) named above attended the site.${checkins(job)}</div>
     <div class="sigs">
       ${sig('Technical Manager / Supervisor', job.salesman_signature, job.salesman_name, job.salesman_signed_at)}
       ${sig('Technician Signature', job.technician_signature, techs, job.completed_at)}

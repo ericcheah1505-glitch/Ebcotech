@@ -32,6 +32,12 @@ function workings(j) {
   return parts.join(' · ');
 }
 
+// Team on the job: people on it (how many checked in on site). Flagged when more than the job type normally needs.
+function teamCell(j) {
+  const flag = j.team > j.team_needed ? ' <b title="More than usual">&#9888;</b>' : '';
+  return `${j.team} <span class="muted">(${j.checked_in} in)</span>${flag}`;
+}
+
 function techSection(t) {
   const rows = t.jobs
     .map(
@@ -41,6 +47,7 @@ function techSection(t) {
         <td>${esc(j.job_no)}</td>
         <td>${esc(j.inv_do_no || '-')}</td>
         <td>${esc(j.job_type)}</td>
+        <td class="c">${teamCell(j)}</td>
         <td class="small">${workings(j)}</td>
         <td class="r">${rm(j.total)}</td>
       </tr>`
@@ -49,9 +56,9 @@ function techSection(t) {
   return `<section class="tech">
     <h3>${esc(t.name)} <span class="muted">· ${cap(t.grade)} technician · ${t.job_count} job(s)</span></h3>
     <table class="jobs">
-      <thead><tr><th class="c">#</th><th>Date done</th><th>Job no.</th><th>INV / DO no.</th><th>Job type</th><th>How the amount is made up</th><th class="r">Amount</th></tr></thead>
+      <thead><tr><th class="c">#</th><th>Date done</th><th>Job no.</th><th>INV / DO no.</th><th>Job type</th><th class="c">Team</th><th>How the amount is made up</th><th class="r">Amount</th></tr></thead>
       <tbody>${rows}</tbody>
-      <tfoot><tr><td colspan="6" class="r">Subtotal – ${esc(t.name)}</td><td class="r">${rm(t.total)}</td></tr></tfoot>
+      <tfoot><tr><td colspan="7" class="r">Subtotal – ${esc(t.name)}</td><td class="r">${rm(t.total)}</td></tr></tfoot>
     </table>
   </section>`;
 }
@@ -127,7 +134,7 @@ export function statementHtml(report, generatedAt) {
     </table>
     <div class="note">Job rates follow the job type and the technician's grade (senior / junior) on the day the job was done.
       When a job has a limit (e.g. installation RM200) and the team's rates add up to more, the limit is shared equally.
-      Under-warranty jobs earn no incentive and are listed at RM0. Each line can be checked in the system by job no. or INV / DO no.</div>
+      Under-warranty jobs earn no incentive and are listed at RM0. Team = technicians on the job (how many checked in on site); &#9888; = more than the job type normally needs. Each line can be checked in the system by job no. or INV / DO no.</div>
     <div class="details">
       <h2 style="margin-top:0">Job details per technician</h2>
       ${technicians.map(techSection).join('')}

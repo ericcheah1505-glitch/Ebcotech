@@ -90,7 +90,10 @@ export function jobIncentive(db, jobId) {
 export function incentiveReport(db, from, to, technicianId = null) {
   const jobs = db
     .prepare(
-      `SELECT j.id, j.job_no, j.customer_name, j.completed_at, j.inv_do_no, jt.name AS job_type
+      `SELECT j.id, j.job_no, j.customer_name, j.completed_at, j.inv_do_no, jt.name AS job_type,
+              (SELECT COUNT(*) FROM job_technicians x WHERE x.job_id = j.id) AS team,
+              (SELECT COUNT(x.checked_in_at) FROM job_technicians x WHERE x.job_id = j.id) AS checked_in,
+              COALESCE(j.team_size, jt.team_size) AS team_needed
        FROM jobs j JOIN job_types jt ON jt.id = j.job_type_id
        WHERE j.status = 'completed' AND substr(j.completed_at, 1, 10) BETWEEN ? AND ?
        ORDER BY j.completed_at`
@@ -128,6 +131,9 @@ export function incentiveReport(db, from, to, technicianId = null) {
         customer_name: job.customer_name,
         inv_do_no: job.inv_do_no,
         job_type: job.job_type,
+        team: job.team,
+        checked_in: job.checked_in,
+        team_needed: job.team_needed,
         grade: line.grade,
         under_warranty: line.under_warranty,
         capped: line.capped,

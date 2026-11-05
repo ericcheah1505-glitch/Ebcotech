@@ -109,6 +109,7 @@ export function JobView({ id, onChanged }: { id: number; onChanged?: () => void 
   const hasReport = submitted || job.status === 'completed';
   // Only the job's owner signs the report and marks it as done (not other salesmen, not admin).
   const canSignOff = job.can_sign_off;
+  const myCheckIn = job.technicians.find((t) => t.id === user.id)?.checked_in_at;
   const ownerName = job.sign_off_name ?? 'the salesman';
 
   const run = async (fn: () => Promise<JobDetail | void>, after?: () => void) => {
@@ -136,6 +137,20 @@ export function JobView({ id, onChanged }: { id: number; onChanged?: () => void 
       setBusy(false);
     }
   };
+
+  // Check-in: arrival time + phone location (if the phone allows it); the first check-in starts the job.
+  const checkIn = () =>
+    run(async () => {
+      const where = await new Promise<{ lat: number; lng: number; accuracy: number } | null>((resolve) => {
+        if (!navigator.geolocation) return resolve(null);
+        navigator.geolocation.getCurrentPosition(
+          (p) => resolve({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy }),
+          () => resolve(null),
+          { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+        );
+      });
+      return api<JobDetail>(`/jobs/${job.id}/check-in`, { body: where ?? {} });
+    });
 
   const setStatus = (status: string, extra: object = {}) => run(() => api<JobDetail>(`/jobs/${job.id}/status`, { body: { status, ...extra } }));
 
@@ -203,6 +218,28 @@ export function JobView({ id, onChanged }: { id: number; onChanged?: () => void 
         <Row label="Address" value={job.address ? `${job.address} 📍` : null} href={job.address ? `https://maps.google.com/?q=${encodeURIComponent(job.address)}` : undefined} />
         <Row label="Phone" value={job.customer_phone ? `${job.customer_phone} 📞` : null} href={job.customer_phone ? `tel:${job.customer_phone}` : undefined} />
         <Row label="Technicians" value={job.technicians.map((t) => `${t.name} (${t.grade})`).join(', ') || 'Not assigned'} />
+        {job.technicians.length > 0 && (
+          <Row
+            label="Site check-in"
+            value={job.technicians
+              .map((t) => `${t.name}: ${t.checked_in_at ? t.checked_in_at.slice(11, 16) : 'not yet'}`)
+              .join(' · ')}
+          />
+        )}
+        {isStaff && job.technicians.some((t) => t.checkin_lat != null) && (
+          <div className="flex flex-wrap gap-x-3 pl-[122px] text-[13px]">
+            {job.technicians
+              .filter((t) => t.checkin_lat != null)
+              .map((t) => (
+                <a key={t.id} href={`https://maps.google.com/?q=${t.checkin_lat},${t.checkin_lng}`} target="_blank" rel="noreferrer" className="font-semibold text-primary">
+                  📍 {t.name}
+                </a>
+              ))}
+          </div>
+        )}
+        {job.technicians.length > job.team_needed && (
+          <Row label="Team size" value={`${job.technicians.length} technicians (job normally needs ${job.team_needed})`} />
+        )}
         <Row label="Salesman" value={job.salesman_name} />
         <Row label="Description" value={job.description} />
         {job.started_at && <Row label="Started" value={niceDateTime(job.started_at)} />}
@@ -249,11 +286,28 @@ export function JobView({ id, onChanged }: { id: number; onChanged?: () => void 
       <div className="flex flex-col gap-2">
         {isTech && job.status === 'assigned' && (
           <Button
-            title="▶ Start job"
+            title="▶ Start job (check in)"
             loading={busy}
             onPress={() =>
-              confirm('Start job?\nStart time will be recorded.\nThen, before touching anything, take the BEFORE photos (Photos → ① Before service).') &&
-              setStatus('in_progress')
+              confirm(
+                'Start job?\nYour arrival time and phone location are recorded.\nThen, before touching anything, take the BEFORE photos (Photos → ① Before service).'
+              ) && checkIn()
+            }
+          />
+        )}
+        {isTech && job.status === 'in_progress' && !myCheckIn && (
+          <Button title="📍 I'm on site – check in" loading={busy} onPress={() => checkIn()} />
+        )}
+        {isTech && job.status === 'assigned' && (
+          <Button
+            variant="secondary"
+            title="Give this job back"
+            onPress={() =>
+              confirm('Give this job back?\nIt goes back to the Available jobs list for other technicians.') &&
+              run(async () => {
+                await api(`/jobs/${job.id}/release`, { method: 'POST' });
+                history.back();
+              })
             }
           />
         )}

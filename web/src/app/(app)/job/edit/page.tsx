@@ -40,6 +40,7 @@ function EditJob() {
   const [completedUntil, setCompletedUntil] = useState<string | null | undefined>(undefined); // completed job: its warranty end
   const [fromJob, setFromJob] = useState<JobDetail | null>(null);
   const [cap, setCap] = useState('');
+  const [teamNeeded, setTeamNeeded] = useState('');
   const [model, setModel] = useState<string | null>(null);
   const [variant, setVariant] = useState<string | null>(null);
   const [brand, setBrand] = useState<string | null>(id ? null : HOUSE_BRAND);
@@ -70,6 +71,7 @@ function EditJob() {
           setUnderWarranty(!!j.under_warranty);
           setWarrantyTouched(true);
           setCap(j.incentive_cap == null ? '' : String(j.incentive_cap));
+          setTeamNeeded(j.team_size == null ? '' : String(j.team_size));
           setModel(j.product_model);
           setVariant(j.product_variant);
           setBrand(j.product_brand);
@@ -146,7 +148,7 @@ function EditJob() {
         site_contact: siteContact.trim(),
         owner_name: ownerName.trim(),
         outstation,
-        ...(user?.role === 'admin' ? { incentive_cap: cap } : {}),
+        ...(user?.role === 'admin' ? { incentive_cap: cap, team_size: teamNeeded } : {}),
         warranty_months: warranty,
         ...(fromJob ? { warranty_followup_job_id: fromJob.id } : {}),
       };
@@ -237,6 +239,8 @@ function EditJob() {
           <>
             <Field label="Job incentive limit (RM, optional)" value={cap} onChange={setCap} inputMode="decimal" placeholder="Blank = use job type's limit" />
             <Muted>For big jobs needing many people: if rates add up to more than this, it is shared equally.</Muted>
+            <Field label="Technicians needed (optional)" value={teamNeeded} onChange={setTeamNeeded} inputMode="numeric" placeholder={`Blank = job type's usual (${types.find((t) => t.id === jobTypeId)?.team_size ?? 1})`} />
+            <Muted>Places technicians can fill when they take this job themselves. Only admin can raise it above the usual.</Muted>
             <Chips label="Salesman" options={salesmen.map((s) => ({ value: s.id, label: s.name }))} value={salesmanId} onChange={setSalesmanId} />
           </>
         )}

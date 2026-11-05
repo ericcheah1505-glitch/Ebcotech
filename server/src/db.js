@@ -199,6 +199,23 @@ function migrate(db) {
   addColumn(db, 'jobs', 'submitted_at', 'TEXT');
   addColumn(db, 'jobs', 'submitted_by', 'INTEGER REFERENCES users(id)');
 
+  // Technicians can take open jobs themselves. team_size = how many technicians a job type normally needs
+  // (a job can override it, admin only); self_assign = the job was taken by a technician, so others may join
+  // until it is full; check-in = each technician's arrival on site (time + phone location).
+  addColumn(db, 'job_types', 'team_size', 'INTEGER NOT NULL DEFAULT 1');
+  addColumn(db, 'jobs', 'team_size', 'INTEGER');
+  addColumn(db, 'jobs', 'self_assign', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn(db, 'job_technicians', 'checked_in_at', 'TEXT');
+  addColumn(db, 'job_technicians', 'checkin_lat', 'REAL');
+  addColumn(db, 'job_technicians', 'checkin_lng', 'REAL');
+  addColumn(db, 'job_technicians', 'checkin_accuracy', 'REAL');
+  if (!db.prepare(`SELECT 1 FROM settings WHERE key = 'migrated_team_size'`).get()) {
+    db.exec(`
+      UPDATE job_types SET team_size = 2 WHERE name = 'Installation';
+      INSERT INTO settings (key, value) VALUES ('migrated_team_size', '1');
+    `);
+  }
+
   // Company rule (Oct 2026): servicing has a 3-month warranty (1 year when a controller or motor is
   // replaced – chosen on the job). Changes the old 1-month default once; later admin edits are kept.
   if (!db.prepare(`SELECT 1 FROM settings WHERE key = 'migrated_service_warranty_3m'`).get()) {
@@ -245,6 +262,7 @@ function seed(db) {
   addType.run('Repair / Breakdown', 3, 30, 20);
   addType.run('Servicing / Maintenance', 3, 30, 20); // 1 year when a controller or motor is replaced
   addType.run('Inspection / Survey', 0, 0, 0);
+  db.prepare("UPDATE job_types SET team_size = 2 WHERE name = 'Installation'").run(); // installations usually take two people
 
   const addExtra = db.prepare(
     'INSERT INTO extra_items (name, unit, senior_amount, junior_amount, active) VALUES (?, ?, ?, ?, ?)'

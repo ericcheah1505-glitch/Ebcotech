@@ -106,6 +106,16 @@ export function completeJob(db, jobId, userId, body = {}) {
   logJob(db, jobId, userId, 'completed', warrantyEnd ? `Marked as done · warranty until ${warrantyEnd}` : 'Marked as done');
 }
 
+// How many technicians a job normally needs: the job's own setting (admin only), else its job type's.
+export const TEAM_SQL = 'COALESCE(j.team_size, jt.team_size)';
+
+// The last two parts of an address ("Bandar Sri Damansara, 52200 K.L."): enough for a technician to see the
+// area before taking a job, without the street, building or customer.
+export function areaOf(address) {
+  const parts = String(address ?? '').split(',').map((p) => p.trim()).filter(Boolean);
+  return parts.length ? parts.slice(-2).join(', ') : null;
+}
+
 export const monthsLabel = (m) => (m > 0 && m % 12 === 0 ? `${m / 12} year${m > 12 ? 's' : ''}` : `${m} month${m === 1 ? '' : 's'}`);
 
 // Works the warranty end out again from the completion date, after the warranty months or the job type

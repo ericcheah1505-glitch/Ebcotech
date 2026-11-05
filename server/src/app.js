@@ -10,8 +10,10 @@ import {
   logJob,
   COMPLETION_FIELDS,
   POSTING_FIELDS,
+  areaOf,
   refreshWarranty,
   reminders,
+  TEAM_SQL,
   setReportFields,
 } from './automation.js';
 import { incentiveReport, jobIncentive } from './incentive.js';
@@ -255,8 +257,8 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
       const b = req.body || {};
       if (!b.name) fail(400, 'Name is required');
       const { lastInsertRowid } = db
-        .prepare('INSERT INTO job_types (name, warranty_months, senior_rate, junior_rate, incentive_cap) VALUES (?, ?, ?, ?, ?)')
-        .run(b.name, num(b.warranty_months), num(b.senior_rate), num(b.junior_rate), optNum(b.incentive_cap));
+        .prepare('INSERT INTO job_types (name, warranty_months, senior_rate, junior_rate, incentive_cap, team_size) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(b.name, num(b.warranty_months), num(b.senior_rate), num(b.junior_rate), optNum(b.incentive_cap), teamSize(b.team_size) ?? 1);
       return db.prepare('SELECT * FROM job_types WHERE id = ?').get(lastInsertRowid);
     })
   );
@@ -266,12 +268,13 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
     wrap((req) => {
       const t = db.prepare('SELECT * FROM job_types WHERE id = ?').get(req.params.id) || fail(404, 'Not found');
       const b = { ...t, ...req.body };
-      db.prepare('UPDATE job_types SET name = ?, warranty_months = ?, senior_rate = ?, junior_rate = ?, incentive_cap = ?, active = ? WHERE id = ?').run(
+      db.prepare('UPDATE job_types SET name = ?, warranty_months = ?, senior_rate = ?, junior_rate = ?, incentive_cap = ?, team_size = ?, active = ? WHERE id = ?').run(
         b.name,
         num(b.warranty_months),
         num(b.senior_rate),
         num(b.junior_rate),
         optNum(b.incentive_cap),
+        teamSize(b.team_size) ?? 1,
         b.active ? 1 : 0,
         t.id
       );
@@ -401,6 +404,99 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
     })
   );
 
+  // ---------- Technicians take jobs themselves ----------
+  // A job can be taken while it has a free place, it isn't in the past, and it is either untouched (nobody
+  // assigned) or already taken by a technician (so the rest of the team may join). Jobs a salesman assigned
+  // to specific people are not open to others.
+  const OPEN_FOR_TAKING = `j.status IN ('pending','assigned') AND (j.scheduled_date IS NULL OR j.scheduled_date >= ?)
+    AND (SELECT COUNT(*) FROM job_technicians x WHERE x.job_id = j.id) < ${TEAM_SQL}
+    AND (j.self_assign = 1 OR NOT EXISTS (SELECT 1 FROM job_technicians x WHERE x.job_id = j.id))`;
+
+  app.get(
+    '/api/jobs/available',
+    requireRole('technician'),
+    wrap((req) => {
+      const rows = db
+        .prepare(
+          `SELECT j.id, j.job_no, jt.name AS job_type, j.scheduled_date, j.scheduled_time, j.address, j.product_model,
+                  j.product_variant, j.outstation, ${TEAM_SQL} AS team_size,
+                  (SELECT GROUP_CONCAT(u.name, ', ') FROM job_technicians x JOIN users u ON u.id = x.user_id WHERE x.job_id = j.id) AS taken_by,
+                  (SELECT COUNT(*) FROM job_technicians x WHERE x.job_id = j.id) AS taken
+           FROM jobs j JOIN job_types jt ON jt.id = j.job_type_id
+           WHERE ${OPEN_FOR_TAKING}
+             AND NOT EXISTS (SELECT 1 FROM job_technicians x WHERE x.job_id = j.id AND x.user_id = ?)
+           ORDER BY COALESCE(j.scheduled_date, '9999'), j.scheduled_time, j.id`
+        )
+        .all(today(), req.user.id);
+      // Only the area is shown before a job is taken – the customer, street and phone appear once it is theirs.
+      return rows.map(({ address, ...r }) => ({ ...r, area: areaOf(address) }));
+    })
+  );
+
+  app.post(
+    '/api/jobs/:id/take',
+    requireRole('technician'),
+    wrap((req) => {
+      const id = Number(req.params.id);
+      const job = db.prepare('SELECT id FROM jobs WHERE id = ?').get(id) || fail(404, 'Job not found');
+      if (db.prepare('SELECT 1 FROM job_technicians WHERE job_id = ? AND user_id = ?').get(id, req.user.id)) fail(400, 'You already have this job');
+      const open = db
+        .prepare(`SELECT j.id FROM jobs j JOIN job_types jt ON jt.id = j.job_type_id WHERE j.id = ? AND ${OPEN_FOR_TAKING}`)
+        .get(id, today());
+      if (!open) fail(409, 'This job is no longer available – someone else took it, or it was assigned.');
+      db.prepare('INSERT INTO job_technicians (job_id, user_id) VALUES (?, ?)').run(job.id, req.user.id);
+      db.prepare(`UPDATE jobs SET self_assign = 1, status = 'assigned', updated_at = ? WHERE id = ?`).run(nowStamp(), job.id);
+      logJob(db, job.id, req.user.id, 'taken', 'Took the job');
+      return jobDetail(db, db.prepare('SELECT * FROM jobs WHERE id = ?').get(job.id), req.user);
+    })
+  );
+
+  // Gives a job back before starting it; with nobody left it returns to the open list.
+  app.post(
+    '/api/jobs/:id/release',
+    requireRole('technician'),
+    wrap((req) => {
+      const job = loadJob(db, req);
+      if (job.status !== 'assigned') fail(400, 'You can only give a job back before starting it – ask the admin to change it.');
+      db.prepare('DELETE FROM job_technicians WHERE job_id = ? AND user_id = ?').run(job.id, req.user.id);
+      const left = db.prepare('SELECT COUNT(*) AS n FROM job_technicians WHERE job_id = ?').get(job.id).n;
+      if (!left) db.prepare(`UPDATE jobs SET status = 'pending', self_assign = 0, updated_at = ? WHERE id = ?`).run(nowStamp(), job.id);
+      logJob(db, job.id, req.user.id, 'released', 'Gave the job back');
+      return { released: true };
+    })
+  );
+
+  // Arrival on site: time and (when the phone allows) location, once per technician. The first check-in
+  // also starts the job.
+  app.post(
+    '/api/jobs/:id/check-in',
+    requireRole('technician'),
+    wrap((req) => {
+      const job = loadJob(db, req);
+      if (!['assigned', 'in_progress'].includes(job.status)) fail(400, 'This job is not in progress');
+      const mine = db.prepare('SELECT checked_in_at FROM job_technicians WHERE job_id = ? AND user_id = ?').get(job.id, req.user.id);
+      if (mine.checked_in_at) fail(400, 'You already checked in');
+      const b = req.body || {};
+      const lat = Number(b.lat);
+      const lng = Number(b.lng);
+      const located = b.lat != null && b.lng != null && Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180;
+      const stamp = nowStamp();
+      db.prepare('UPDATE job_technicians SET checked_in_at = ?, checkin_lat = ?, checkin_lng = ?, checkin_accuracy = ? WHERE job_id = ? AND user_id = ?').run(
+        stamp,
+        located ? lat : null,
+        located ? lng : null,
+        located && Number.isFinite(Number(b.accuracy)) ? Number(b.accuracy) : null,
+        job.id,
+        req.user.id
+      );
+      if (job.status === 'assigned') {
+        db.prepare(`UPDATE jobs SET status = 'in_progress', started_at = COALESCE(started_at, ?), updated_at = ? WHERE id = ?`).run(stamp, stamp, job.id);
+      }
+      logJob(db, job.id, req.user.id, 'checked_in', located ? 'Checked in on site (location recorded)' : 'Checked in on site (no location)');
+      return jobDetail(db, db.prepare('SELECT * FROM jobs WHERE id = ?').get(job.id), req.user);
+    })
+  );
+
   app.get('/api/jobs/:id', wrap((req) => jobDetail(db, loadJob(db, req), req.user)));
 
   app.post(
@@ -417,8 +513,8 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
       const { lastInsertRowid } = db
         .prepare(
           `INSERT INTO jobs (job_type_id, customer_name, customer_phone, address, description, scheduled_date,
-             scheduled_time, status, salesman_id, created_by, under_warranty, incentive_cap, warranty_months)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             scheduled_time, status, salesman_id, created_by, under_warranty, incentive_cap, warranty_months, team_size)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           b.job_type_id,
@@ -433,7 +529,8 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
           req.user.id,
           b.under_warranty ? 1 : 0,
           req.user.role === 'admin' ? optNum(b.incentive_cap) : null,
-          warranty
+          warranty,
+          req.user.role === 'admin' ? teamSize(b.team_size) : null
         );
       const id = Number(lastInsertRowid);
       const jobNo = assignJobNo(db, id);
@@ -458,7 +555,7 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
       db.prepare(
         `UPDATE jobs SET job_type_id = ?, customer_name = ?, customer_phone = ?, address = ?, description = ?,
            scheduled_date = ?, scheduled_time = ?, salesman_id = ?, warranty_months = ?, under_warranty = ?,
-           incentive_cap = ?, updated_at = ? WHERE id = ?`
+           incentive_cap = ?, team_size = ?, updated_at = ? WHERE id = ?`
       ).run(
         b.job_type_id,
         b.customer_name,
@@ -471,9 +568,13 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
         warrantyMonths(b.warranty_months),
         b.under_warranty ? 1 : 0,
         req.user.role === 'admin' ? optNum(b.incentive_cap) : job.incentive_cap,
+        req.user.role === 'admin' ? teamSize(b.team_size) : job.team_size,
         nowStamp(),
         job.id
       );
+      if (req.user.role === 'admin' && (teamSize(b.team_size) ?? null) !== (job.team_size ?? null)) {
+        logJob(db, job.id, req.user.id, 'team_size', `Technicians needed: ${teamSize(b.team_size) ?? 'job type default'}`);
+      }
       if (Array.isArray(req.body.technician_ids)) {
         const ids = req.body.technician_ids.map(Number);
         setTechnicians(db, job.id, ids);
@@ -1126,6 +1227,14 @@ function requireOwner(db, job, user, what) {
   fail(403, owner ? `This job belongs to ${owner.name} – only they can ${what}.` : `Only staff can ${what}.`);
 }
 
+// Technicians a job needs: blank = the job type's default, otherwise 1 to 20.
+function teamSize(v) {
+  if (v === '' || v == null) return null;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 1 || n > 20) fail(400, 'Technicians needed must be a whole number from 1 to 20');
+  return n;
+}
+
 // Warranty months chosen on a job: blank = the job type's default, otherwise a whole number of months.
 function warrantyMonths(v) {
   if (v === '' || v == null) return null;
@@ -1168,10 +1277,16 @@ function jobDetail(db, job, user) {
   full.accessories = parseJson(full.accessories);
   full.technicians = db
     .prepare(
-      `SELECT u.id, u.name, COALESCE(x.grade, u.grade) AS grade FROM job_technicians x JOIN users u ON u.id = x.user_id
+      `SELECT u.id, u.name, COALESCE(x.grade, u.grade) AS grade, x.checked_in_at, x.checkin_lat, x.checkin_lng
+       FROM job_technicians x JOIN users u ON u.id = x.user_id
        WHERE x.job_id = ? ORDER BY u.name`
     )
     .all(job.id);
+  // Check-in locations are for the office; technicians only see the time.
+  if (user.role === 'technician') for (const t of full.technicians) Object.assign(t, { checkin_lat: null, checkin_lng: null });
+  const type = db.prepare('SELECT team_size FROM job_types WHERE id = ?').get(full.job_type_id);
+  full.type_team_size = type.team_size;
+  full.team_needed = full.team_size ?? type.team_size; // technicians this job normally needs
   full.extras = db
     .prepare(
       `SELECT je.id, je.qty, je.note, je.technician_id, je.created_by, ei.name, ei.unit, u.name AS technician_name

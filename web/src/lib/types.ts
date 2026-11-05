@@ -23,6 +23,7 @@ export type User = {
 export type JobType = {
   id: number;
   name: string;
+  team_size: number; // technicians this type of job normally needs
   warranty_months: number;
   senior_rate: number;
   junior_rate: number;
@@ -114,7 +115,10 @@ export type JobDetail = JobSummary & {
   customer_signature: string | null;
   salesman_signature: string | null;
   salesman_signed_at: string | null;
-  technicians: { id: number; name: string; grade: Grade }[];
+  technicians: { id: number; name: string; grade: Grade; checked_in_at: string | null; checkin_lat: number | null; checkin_lng: number | null }[];
+  team_size: number | null; // this job's own setting (admin only); null = the job type's
+  type_team_size: number;
+  team_needed: number; // technicians this job normally needs
   extras: {
     id: number;
     qty: number;
@@ -128,6 +132,22 @@ export type JobDetail = JobSummary & {
   photos: Photo[];
   logs: { action: string; note: string | null; created_at: string; user_name: string | null }[];
   incentive?: IncentiveLine[];
+};
+
+// A job a technician can take (only the area is shown until it is theirs).
+export type AvailableJob = {
+  id: number;
+  job_no: string;
+  job_type: string;
+  scheduled_date: string | null;
+  scheduled_time: string | null;
+  area: string | null;
+  product_model: string | null;
+  product_variant: string | null;
+  outstation: number;
+  team_size: number;
+  taken: number;
+  taken_by: string | null;
 };
 
 export type Contract = {

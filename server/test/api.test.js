@@ -1014,3 +1014,137 @@ test('only the job owner signs the report and marks it done – not other salesm
     server.close();
   }
 });
+
+test('technicians take open jobs themselves: first come first served, team size, join, release, privacy', async () => {
+  const { db, server, call, login } = await setup();
+  try {
+    const admin = await login('admin', 'admin123');
+    const sales = await login('sales1', 'sales123');
+    const tech1 = await login('tech1', 'tech123');
+    const tech2 = await login('tech2', 'tech123');
+    const users = await call(admin, 'GET', '/users');
+    const id = (n) => users.find((u) => u.username === n).id;
+    const types = await call(admin, 'GET', '/job-types');
+    const install = types.find((t) => t.name === 'Installation');
+    const servicing = types.find((t) => t.name.startsWith('Servicing'));
+    assert.equal(install.team_size, 2);
+    assert.equal(servicing.team_size, 1);
+
+    // A salesman posts jobs without technicians; one has a customer, address and phone to hide
+    const single = await call(sales, 'POST', '/jobs', {
+      job_type_id: servicing.id, customer_name: 'Secret Customer', customer_phone: '012-999 8888',
+      address: 'Lot 5, Jalan Rahsia, Bandar Sri Damansara, 52200 K.L.', scheduled_date: today(),
+    });
+    const team = await call(sales, 'POST', '/jobs', { job_type_id: install.id, customer_name: 'Team Co', scheduled_date: today() });
+    const past = await call(sales, 'POST', '/jobs', { job_type_id: servicing.id, customer_name: 'Old Co', scheduled_date: '2020-01-01' });
+    const assigned = await call(sales, 'POST', '/jobs', { job_type_id: install.id, customer_name: 'Assigned Co', technician_ids: [id('tech1')] });
+
+    // The open list: only open jobs, area but no customer details; staff can't use it
+    const list = await call(tech1, 'GET', '/jobs/available');
+    assert.deepEqual(list.map((j) => j.id).sort(), [single.id, team.id].sort()); // not past, not assigned by staff
+    const row = list.find((j) => j.id === single.id);
+    assert.equal(row.area, 'Bandar Sri Damansara, 52200 K.L.');
+    assert.ok(!JSON.stringify(list).match(/Secret|012-999|Rahsia/), 'customer details must stay hidden until the job is taken');
+    await assert.rejects(call(sales, 'GET', '/jobs/available'), (e) => e.status === 403);
+    await assert.rejects(call(tech1, 'GET', `/jobs/${single.id}`), /not assigned/); // can't open it before taking
+
+    // Taking: the job becomes theirs and shows everything; others can't take a full job
+    const mine = await call(tech1, 'POST', `/jobs/${single.id}/take`);
+    assert.equal(mine.status, 'assigned');
+    assert.equal(mine.customer_name, 'Secret Customer');
+    assert.equal(mine.technicians[0].id, id('tech1'));
+    await assert.rejects(call(tech2, 'POST', `/jobs/${single.id}/take`), (e) => e.status === 409);
+    await assert.rejects(call(tech1, 'POST', `/jobs/${single.id}/take`), /already have/);
+    assert.ok(!(await call(tech2, 'GET', '/jobs/available')).some((j) => j.id === single.id));
+    await assert.rejects(call(tech2, 'POST', `/jobs/${past.id}/take`), (e) => e.status === 409);
+    await assert.rejects(call(tech2, 'POST', `/jobs/${assigned.id}/take`), (e) => e.status === 409); // assigned by staff
+
+    // A team job: first takes, second joins, then it is full
+    await call(tech1, 'POST', `/jobs/${team.id}/take`);
+    const joinable = (await call(tech2, 'GET', '/jobs/available')).find((j) => j.id === team.id);
+    assert.equal(joinable.taken, 1);
+    assert.equal(joinable.team_size, 2);
+    assert.equal(joinable.taken_by, 'Senior Tech');
+    await call(tech2, 'POST', `/jobs/${team.id}/take`);
+    await assert.rejects(call(admin, 'POST', `/jobs/${team.id}/take`), (e) => e.status === 403);
+    const full = await call(admin, 'GET', `/jobs/${team.id}`);
+    assert.deepEqual(full.technicians.map((t) => t.id).sort(), [id('tech1'), id('tech2')].sort());
+    assert.equal(full.team_needed, 2);
+    assert.ok(full.logs.some((l) => l.action === 'taken'));
+
+    // Admin can raise the team size of one job (nobody else can); more people can then join
+    const big = await call(sales, 'POST', '/jobs', { job_type_id: servicing.id, customer_name: 'Big Co', team_size: 3 });
+    assert.equal(big.team_size, null); // a salesman can't set it
+    await call(admin, 'PUT', `/jobs/${big.id}`, { team_size: 2 });
+    await call(tech1, 'POST', `/jobs/${big.id}/take`);
+    await call(tech2, 'POST', `/jobs/${big.id}/take`);
+    await assert.rejects(call(admin, 'PUT', `/jobs/${big.id}`, { team_size: 0 }), /1 to 20/);
+    assert.ok((await call(admin, 'GET', `/jobs/${big.id}`)).logs.some((l) => l.action === 'team_size'));
+
+    // Release: only before starting; with nobody left the job goes back to the open list
+    await call(tech1, 'POST', `/jobs/${single.id}/release`);
+    assert.equal((await call(admin, 'GET', `/jobs/${single.id}`)).status, 'pending');
+    assert.ok((await call(tech2, 'GET', '/jobs/available')).some((j) => j.id === single.id));
+    await call(tech2, 'POST', `/jobs/${single.id}/take`);
+    await call(tech2, 'POST', `/jobs/${single.id}/status`, { status: 'in_progress' });
+    await assert.rejects(call(tech2, 'POST', `/jobs/${single.id}/release`), /before starting/);
+
+    // A job taken by one team member and released by them keeps the other's place
+    await call(tech1, 'POST', `/jobs/${team.id}/release`);
+    const after = await call(admin, 'GET', `/jobs/${team.id}`);
+    assert.equal(after.status, 'assigned');
+    assert.deepEqual(after.technicians.map((t) => t.id), [id('tech2')]);
+  } finally {
+    server.close();
+  }
+});
+
+test('site check-in: time and location per technician, starts the job, shown to the office and on the report', async () => {
+  const { server, call, login, raw } = await setup();
+  try {
+    const admin = await login('admin', 'admin123');
+    const sales = await login('sales1', 'sales123');
+    const tech1 = await login('tech1', 'tech123');
+    const tech2 = await login('tech2', 'tech123');
+    const users = await call(admin, 'GET', '/users');
+    const id = (n) => users.find((u) => u.username === n).id;
+    const job = await call(sales, 'POST', '/jobs', { job_type_id: 1, customer_name: 'Check Co', technician_ids: [id('tech1'), id('tech2')] });
+
+    await call(tech1, 'POST', `/jobs/${job.id}/check-in`, { lat: 123, lng: 101 }); // out-of-range location is stored as "no location"
+    const first = (await call(admin, 'GET', `/jobs/${job.id}`));
+    assert.equal(first.status, 'in_progress'); // the first check-in started the job
+
+    await assert.rejects(call(tech1, 'POST', `/jobs/${job.id}/check-in`, {}), /already checked in/);
+    const second = await call(tech2, 'POST', `/jobs/${job.id}/check-in`, { lat: 3.1319, lng: 101.6841, accuracy: 20 });
+    assert.ok(second.technicians.find((t) => t.id === id('tech2')).checked_in_at);
+    assert.equal(second.technicians.find((t) => t.id === id('tech2')).checkin_lat, null); // technicians don't see locations
+
+    // The office sees times and locations
+    const office = await call(admin, 'GET', `/jobs/${job.id}`);
+    const t2 = office.technicians.find((t) => t.id === id('tech2'));
+    assert.equal(t2.checkin_lat, 3.1319);
+    assert.equal(t2.checkin_lng, 101.6841);
+    const t1 = office.technicians.find((t) => t.id === id('tech1'));
+    assert.ok(t1.checked_in_at);
+    assert.equal(t1.checkin_lat, null); // out-of-range location was not kept
+
+    // Not for jobs that aren't theirs or aren't running
+    await assert.rejects(call(sales, 'POST', `/jobs/${job.id}/check-in`, {}), (e) => e.status === 403);
+    const other = await call(sales, 'POST', '/jobs', { job_type_id: 1, customer_name: 'Other Co', technician_ids: [id('tech1')] });
+    await assert.rejects(call(tech2, 'POST', `/jobs/${other.id}/check-in`, {}), /not assigned/);
+
+    // Check-in times appear on the report and the incentive statement shows the team
+    await call(tech1, 'POST', `/jobs/${job.id}/submit-report`, { work_done: 'Done' });
+    await call(sales, 'POST', `/jobs/${job.id}/salesman-signature`, { signature: SIG });
+    await call(sales, 'POST', `/jobs/${job.id}/status`, { status: 'completed' });
+    const html = await (await raw(sales, `/jobs/${job.id}/report.html`)).text();
+    assert.match(html, /Site check-in: .*Senior Tech \d\d:\d\d/);
+    assert.match(html, /customer confirms that the technician/);
+    const statement = await (await raw(admin, '/incentives/statement.pdf?format=html')).text();
+    assert.match(statement, /Team/);
+    assert.match(statement, /2 <span class="muted">\(2 in\)<\/span>/);
+    assert.match(statement, /&#9888;/); // 2 people on a job type that normally needs 1
+  } finally {
+    server.close();
+  }
+});

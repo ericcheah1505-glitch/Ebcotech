@@ -115,6 +115,7 @@ export function Field({
   value,
   onChange,
   multiline,
+  tall,
   placeholder,
   type = 'text',
   inputMode,
@@ -125,6 +126,7 @@ export function Field({
   value: string;
   onChange: (v: string) => void;
   multiline?: boolean;
+  tall?: boolean; // a big writing area (job report notes)
   placeholder?: string;
   type?: string;
   inputMode?: React.HTMLAttributes<HTMLInputElement>['inputMode'];
@@ -136,7 +138,7 @@ export function Field({
     <label className="flex flex-col gap-1">
       <Label>{label}</Label>
       {multiline ? (
-        <textarea className="field min-h-[80px] resize-y" value={value} onChange={handle} placeholder={placeholder} />
+        <textarea className={tall ? 'field min-h-[200px] resize-y' : 'field min-h-[80px] resize-y'} value={value} onChange={handle} placeholder={placeholder} />
       ) : (
         <input
           className="field"

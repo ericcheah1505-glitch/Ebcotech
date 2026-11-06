@@ -248,7 +248,7 @@ export function JobView({ id, onChanged }: { id: number; onChanged?: () => void 
           <Row label="Warranty" value={job.warranty_end ? `Until ${niceDate(job.warranty_end)} (${monthsLabel(job.warranty_months ?? 0)})` : 'None'} />
         )}
         {job.work_done && <Row label="Work done" value={job.work_done} />}
-        {job.remarks && <Row label="Remarks" value={job.remarks} />}
+        {job.remarks && <Row label="Notes" value={job.remarks} />}
         {job.customer_comment && <Row label="Customer comment" value={job.customer_comment} />}
         {job.status === 'completed' && <Row label="Working time" value={job.night_work ? 'Night work' : 'Normal hour'} />}
       </Card>
@@ -423,7 +423,14 @@ export function JobView({ id, onChanged }: { id: number; onChanged?: () => void 
             value={nightWork ? 'night' : 'normal'}
             onChange={(v: string) => setNightWork(v === 'night')}
           />
-          <Field label="Remarks (optional)" value={remarks} onChange={setRemarks} multiline />
+          <Field
+            label="Notes for the report (optional)"
+            value={remarks}
+            onChange={setRemarks}
+            multiline
+            tall
+            placeholder="Problems found, parts replaced, advice to the customer… Whatever you type here is printed in the big box of the service report."
+          />
           <Field label="Customer comment (optional)" value={custComment} onChange={setCustComment} multiline />
           {techSig || job.technician_signature ? <img src={(techSig ?? job.technician_signature)!} alt="" className="h-[90px] bg-white object-contain" /> : null}
           <Button variant="secondary" title={techSig || job.technician_signature ? 'Redo technician signature' : 'Technician signature'} onPress={() => setSigning('technician')} />

@@ -131,7 +131,7 @@ export function reportHtml(job, photos = []) {
     job.extras.length
       ? `<div><b>Additional work:</b> <span class="fill">${job.extras.map((e) => `${esc(e.name)} x${e.qty}${e.note ? ` (${esc(e.note)})` : ''}`).join(', ')}</span></div>`
       : '',
-    job.remarks ? `<div><b>Remarks:</b> <span class="fill">${esc(job.remarks)}</span></div>` : '',
+    job.remarks ? `<div><b>Notes:</b> <span class="fill">${esc(job.remarks)}</span></div>` : '',
     job.warranty_end ? `<div><b>Warranty until:</b> <span class="fill">${niceDate(job.warranty_end)}</span></div>` : '',
   ].join('');
 
@@ -164,6 +164,7 @@ export function reportHtml(job, photos = []) {
     .problems.tall { min-height: 440px; }
     .comment { min-height: 85px; }
     .problems div { margin: 3px 0; }
+    .problems .fill { font-size: 12.5px; line-height: 1.35; }
     .sigs { display: flex; gap: 22px; margin-top: 16px; }
     .sig { flex: 1; text-align: center; font-family: Arial, Helvetica, sans-serif; }
     .sigbox { height: 62px; display: flex; align-items: flex-end; justify-content: center; }

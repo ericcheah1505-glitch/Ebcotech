@@ -53,6 +53,7 @@ export function ReportPreview({ job, visible, onClose, onSign }: { job: JobDetai
             <iframe
               title="Service report preview"
               srcDoc={html}
+              sandbox="allow-same-origin"
               scrolling="no"
               onLoad={(e) => setHeight(e.currentTarget.contentDocument?.documentElement.scrollHeight ?? 1200)}
               style={{ width: PAGE_WIDTH, height, border: 0, transform: `scale(${scale})`, transformOrigin: '0 0' }}

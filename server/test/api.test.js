@@ -1148,3 +1148,71 @@ test('site check-in: time and location per technician, starts the job, shown to 
     server.close();
   }
 });
+
+test('security: booby-trapped signatures are refused everywhere and can never run in a report', async () => {
+  const { db, server, call, login, raw } = await setup();
+  try {
+    const admin = await login('admin', 'admin123');
+    const sales = await login('sales1', 'sales123');
+    const tech = await login('tech1', 'tech123');
+    const tid = (await call(admin, 'GET', '/users')).find((u) => u.username === 'tech1').id;
+    const job = await call(sales, 'POST', '/jobs', { job_type_id: 1, customer_name: 'X', technician_ids: [tid] });
+    const evil = `x" onerror="document.title=localStorage.getItem('auth_token')" a="`;
+    const bad = [evil, 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=', 'javascript:alert(1)', 'data:image/png;base64,AA" onerror="x', `data:image/png;base64,${'A'.repeat(1_600_000)}`];
+
+    for (const sig of bad) {
+      await assert.rejects(call(tech, 'POST', `/jobs/${job.id}/submit-report`, { work_done: 'ok', technician_signature: sig }), /PNG or JPEG/);
+      await assert.rejects(call(tech, 'POST', `/jobs/${job.id}/submit-report`, { work_done: 'ok', customer_signature: sig }), /PNG or JPEG/);
+      await assert.rejects(call(tech, 'POST', `/jobs/${job.id}/signatures`, { technician_signature: sig }), /PNG or JPEG/);
+      await assert.rejects(call(tech, 'POST', `/jobs/${job.id}/signatures`, { customer_signature: sig }), /PNG or JPEG/);
+    }
+    // Real signatures (PNG from the signature pad) still work
+    await call(tech, 'POST', `/jobs/${job.id}/submit-report`, { work_done: 'ok', technician_signature: SIG, customer_signature: SIG });
+    for (const sig of bad) await assert.rejects(call(sales, 'POST', `/jobs/${job.id}/salesman-signature`, { signature: sig }), /Signature image missing/);
+    for (const sig of bad) await assert.rejects(call(sales, 'POST', `/jobs/${job.id}/status`, { status: 'completed', customer_signature: sig }), /PNG or JPEG/);
+
+    // Even if something bad were already stored (before this fix), the report page leaves it out and blocks scripts
+    db.prepare('UPDATE jobs SET technician_signature = ?, customer_signature = ?, customer_sign_name = ?, work_done = ? WHERE id = ?').run(evil, evil, `"><img src=x onerror=alert(1)>`, `<script>alert(1)</script>`, job.id);
+    const html = await (await raw(sales, `/jobs/${job.id}/report.html`)).text();
+    assert.ok(!/onerror="document/.test(html), 'planted handler must not reach the page');
+    assert.ok(!/<script>alert|<img src=x onerror/.test(html), 'text fields must be escaped');
+    assert.match(html, /Content-Security-Policy" content="default-src 'none'; img-src data:/);
+    const statement = await (await raw(admin, '/incentives/statement.pdf?format=html')).text();
+    assert.match(statement, /Content-Security-Policy/);
+  } finally {
+    server.close();
+  }
+});
+
+test('security: browser protections on every reply, no framework banner, no internal details in errors, no sample logins online', async () => {
+  const { server, call, login, raw } = await setup();
+  try {
+    const admin = await login('admin', 'admin123');
+    const res = await raw(admin, '/me');
+    assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(res.headers.get('x-frame-options'), 'DENY');
+    assert.equal(res.headers.get('x-powered-by'), null);
+    assert.match(res.headers.get('content-security-policy'), /default-src 'self'.*object-src 'none'.*frame-ancestors 'none'/);
+    assert.match(res.headers.get('strict-transport-security'), /max-age=/);
+
+    // Unknown user and wrong password look the same
+    await assert.rejects(call(null, 'POST', '/login', { username: 'nobody', password: 'whatever1' }), /Wrong username or password/);
+    await assert.rejects(call(null, 'POST', '/login', { username: 'admin', password: 'whatever1' }), /Wrong username or password/);
+  } finally {
+    server.close();
+  }
+
+  // Online (NODE_ENV=production) a new database has only the admin, who must change the starting password
+  const before = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'production';
+  try {
+    const db = openDb(':memory:');
+    const users = db.prepare('SELECT username, must_change_password FROM users').all();
+    assert.equal(users.length, 1);
+    assert.equal(users[0].username, 'admin');
+    assert.equal(users[0].must_change_password, 1);
+  } finally {
+    if (before === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = before;
+  }
+});

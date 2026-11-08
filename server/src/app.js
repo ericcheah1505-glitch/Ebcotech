@@ -23,10 +23,13 @@ import { previewHtml, reportHtml, reportPdf } from './report.js';
 import { incentiveWorkbook, installedWorkbook, jobsWorkbook } from './exports.js';
 import { STATEMENT_PDF_OPTIONS, statementHtml } from './statement.js';
 import { addDays, isValidDate, nowStamp, today } from './dates.js';
+import { isSignatureImage, signatureError } from './validate.js';
 import { callbacksDue, FOLLOWUP_STATUSES, followupItem, followups, followupStatusOf, setFollowup } from './warranty.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { decodeImage, MAX_PHOTOS_PER_JOB, mimeFor, photoPath, removePhotoFile, savePhotoFile } from './photos.js';
+
+const NO_SUCH_USER_HASH = hashPassword('no-such-user');
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -60,6 +63,23 @@ const STAFF = ['admin', 'salesman'];
 export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR || 'data', 'photos') } = {}) {
   const loginGuard = createLoginGuard();
   const app = express();
+  app.disable('x-powered-by');
+  // Browser protections: no sniffing, never shown inside another site's frame, HTTPS only, and the page may
+  // only load its own scripts/images (a planted script could not call out or load anything from elsewhere).
+  app.use((req, res, next) => {
+    res.set({
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'DENY',
+      'Referrer-Policy': 'no-referrer',
+      'Strict-Transport-Security': 'max-age=31536000',
+      'Permissions-Policy': 'geolocation=(self), camera=(self), microphone=()',
+      'Content-Security-Policy':
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
+        "font-src 'self' data:; connect-src 'self'; frame-src 'self' blob: about:; object-src 'none'; base-uri 'self'; " +
+        "form-action 'self'; frame-ancestors 'none'",
+    });
+    next();
+  });
   app.set('trust proxy', 'loopback'); // behind Caddy on the cloud server, so req.ip is the phone's address
   app.use(cors());
   app.use(express.json({ limit: '10mb' }));
@@ -74,7 +94,9 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
       const attemptKey = `${req.ip}|${name}`;
       if (loginGuard.blocked(attemptKey)) fail(429, 'Too many wrong passwords. Please wait 15 minutes and try again.');
       const user = db.prepare('SELECT * FROM users WHERE lower(username) = ? AND active = 1').get(name);
-      if (!user || !verifyPassword(String(password || ''), user.password_hash)) {
+      // Always do the password work, so the reply time doesn't reveal which usernames exist.
+      const passwordOk = verifyPassword(String(password || ''), user ? user.password_hash : NO_SUCH_USER_HASH);
+      if (!user || !passwordOk) {
         loginGuard.failed(attemptKey);
         fail(401, 'Wrong username or password');
       }
@@ -609,6 +631,8 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
       const stamp = nowStamp();
       if (to === 'completed') {
         requireOwner(db, job, req.user, 'mark it as done');
+        const sigError = signatureError(b, ['technician_signature', 'customer_signature']);
+        if (sigError) fail(400, sigError);
         if (!job.salesman_signature) fail(400, 'The salesman must sign the report before the job can be marked as done');
         if ('warranty_months' in b) db.prepare('UPDATE jobs SET warranty_months = ? WHERE id = ?').run(warrantyMonths(b.warranty_months), job.id);
         completeJob(db, job.id, req.user.id, b);
@@ -650,7 +674,9 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
       const job = loadJob(db, req);
       const b = req.body || {};
       if (job.status === 'completed' && req.user.role !== 'admin') fail(400, 'Job is already done');
-      const isImage = (v) => typeof v === 'string' && v.startsWith('data:image');
+      const isImage = isSignatureImage;
+      const sigError = signatureError(b, ['technician_signature', 'customer_signature']);
+      if (sigError) fail(400, sigError);
       if (!isImage(b.technician_signature) && !isImage(b.customer_signature)) fail(400, 'Signature image missing');
       if (isImage(b.technician_signature)) {
         db.prepare('UPDATE jobs SET technician_signature = ? WHERE id = ?').run(b.technician_signature, job.id);
@@ -677,6 +703,8 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
       const b = req.body || {};
       if (['completed', 'cancelled'].includes(job.status)) fail(400, `Job is already ${job.status}`);
       if (!String(b.work_done || '').trim()) fail(400, 'Please fill in work done');
+      const sigError = signatureError(b, ['technician_signature', 'customer_signature']);
+      if (sigError) fail(400, sigError);
       const stamp = nowStamp();
       setReportFields(db, job.id, b, COMPLETION_FIELDS);
       db.prepare(
@@ -823,7 +851,7 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
       const job = loadJob(db, req);
       requireOwner(db, job, req.user, 'sign the report');
       if (job.status !== 'completed' && !job.submitted_at) fail(400, 'The technician has not submitted the job report yet');
-      if (!String(req.body?.signature || '').startsWith('data:image')) fail(400, 'Signature image missing');
+      if (!isSignatureImage(req.body?.signature)) fail(400, 'Signature image missing');
       // The signer is the job's salesman from now on, so the report shows their name under the signature.
       db.prepare('UPDATE jobs SET salesman_signature = ?, salesman_signed_at = ?, salesman_id = COALESCE(salesman_id, created_by, ?) WHERE id = ?').run(
         req.body.signature,
@@ -1141,8 +1169,9 @@ export function createApp(db, { photosDir = path.resolve(process.env.DATA_DIR ||
 
   app.use((err, req, res, next) => {
     const status = err.status || (String(err.message).includes('UNIQUE') ? 409 : 500);
-    if (status === 500) console.error(err);
-    res.status(status).json({ error: status === 409 ? 'That name/username already exists' : err.message });
+    if (status === 500) console.error(err); // the details stay in the server log, not on the phone
+    const error = status === 409 ? 'That name/username already exists' : status === 500 ? 'Something went wrong on the server. Please try again.' : err.message;
+    res.status(status).json({ error });
   });
 
   return app;

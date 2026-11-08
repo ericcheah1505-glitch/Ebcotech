@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer';
+import { isSignatureImage } from './validate.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const LOGO_DATA_URI = `data:image/png;base64,${fs.readFileSync(path.join(HERE, '..', 'assets', 'company-logo.png')).toString('base64')}`;
@@ -39,7 +40,12 @@ export const esc = (s) =>
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
     .replace(/\n/g, '<br/>');
+
+// The report page may only contain text, inline styles and data: images – no scripts, no outside requests.
+export const REPORT_CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'"/>`;
 
 const box = (checked, label) => `<span class="opt"><span class="cb">${checked ? '&#10003;' : ''}</span>${label}</span>`;
 
@@ -120,7 +126,7 @@ export function reportHtml(job, photos = []) {
   const fill = (text) => `<span class="fill">${esc(text) || '&nbsp;'}</span>`;
   const sig = (title, img, name, date) => `
     <div class="sig">
-      <div class="sigbox">${img ? `<img src="${img}"/>` : ''}</div>
+      <div class="sigbox">${isSignatureImage(img) ? `<img src="${img}"/>` : ''}</div>
       <div class="sigline">${title}</div>
       <div class="muted">${esc(name) || '&nbsp;'}${date ? ` · ${niceDate(date)}` : ''}</div>
     </div>`;
@@ -135,7 +141,7 @@ export function reportHtml(job, photos = []) {
     job.warranty_end ? `<div><b>Warranty until:</b> <span class="fill">${niceDate(job.warranty_end)}</span></div>` : '',
   ].join('');
 
-  return `<!doctype html><html><head><meta charset="utf-8"/>
+  return `<!doctype html><html><head><meta charset="utf-8"/>${REPORT_CSP}
   <style>
     @page { size: A4; margin: 22px 28px; }
     body { font-family: 'Times New Roman', Times, serif; font-size: 10.5px; color: #111; margin: 0; }
@@ -257,6 +263,10 @@ export async function reportPdf(html, options = {}) {
   const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
   try {
     const page = await browser.newPage();
+    // The report is only text and embedded images: run no scripts and fetch nothing from anywhere.
+    await page.setJavaScriptEnabled(false);
+    await page.setRequestInterception(true);
+    page.on('request', (r) => (/^(data|about|blob):/.test(r.url()) ? r.continue() : r.abort()));
     await page.setContent(html, { waitUntil: 'load' });
     return Buffer.from(await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true, ...options }));
   } finally {

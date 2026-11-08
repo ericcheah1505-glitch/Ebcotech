@@ -248,9 +248,14 @@ function seed(db) {
     'INSERT INTO users (name, username, password_hash, role, grade) VALUES (?, ?, ?, ?, ?)'
   );
   addUser.run('Administrator', 'admin', hashPassword('admin123'), 'admin', null);
-  addUser.run('Sample Salesman', 'sales1', hashPassword('sales123'), 'salesman', null);
-  addUser.run('Senior Tech', 'tech1', hashPassword('tech123'), 'technician', 'senior');
-  addUser.run('Junior Tech', 'tech2', hashPassword('tech123'), 'technician', 'junior');
+  if (process.env.NODE_ENV === 'production') {
+    // On the internet: no sample logins, and the starting admin password must be changed at first login.
+    db.prepare("UPDATE users SET must_change_password = 1 WHERE username = 'admin'").run();
+  } else {
+    addUser.run('Sample Salesman', 'sales1', hashPassword('sales123'), 'salesman', null);
+    addUser.run('Senior Tech', 'tech1', hashPassword('tech123'), 'technician', 'senior');
+    addUser.run('Junior Tech', 'tech2', hashPassword('tech123'), 'technician', 'junior');
+  }
 
   // Company rates (Oct 2026). Repair rate is a placeholder until confirmed.
   // Inspection is done by the salesman, so it pays no technician incentive.

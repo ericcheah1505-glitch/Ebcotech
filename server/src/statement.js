@@ -2,7 +2,7 @@
 // every technician's incentive was worked out. Only job no. and INV/DO no. identify a job (no
 // customer names or addresses), since the printout is shown to everyone. Under-warranty jobs are
 // listed at RM0 so technicians can see every job was counted.
-import { COMPANY, COMPANY_NAME, esc, LOGO_DATA_URI, niceDate } from './report.js';
+import { COMPANY, COMPANY_NAME, esc, LOGO_DATA_URI, niceDate, REPORT_CSP } from './report.js';
 
 const rm = (n) => `RM ${Number(n || 0).toFixed(2)}`;
 const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : '');
@@ -73,7 +73,7 @@ export function statementHtml(report, generatedAt) {
     )
     .join('');
 
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"/><style>
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"/>${REPORT_CSP}<style>
     @page { size: A4; margin: 14mm 12mm 16mm; }
     * { box-sizing: border-box; }
     body { font-family: Arial, 'Noto Sans', 'Noto Sans CJK SC', sans-serif; color: #111; font-size: 11px; margin: 0; }
